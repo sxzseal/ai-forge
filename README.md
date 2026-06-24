@@ -36,8 +36,8 @@
 ### 三步启动
 
 ```bash
-# 1. 克隆框架（替换为你的仓库地址）
-git clone https://github.com/your-org/ai-forge ~/Projects/ai-forge
+# 1. 克隆框架
+git clone <your-repo-url> ~/Projects/ai-forge
 cd ~/Projects/ai-forge
 
 # 2. 创建新项目（自动安装依赖、初始化 MSW、Git）

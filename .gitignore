@@ -33,3 +33,7 @@ Thumbs.db
 
 # Dev Loop state (not skills)
 .loop/
+
+# Generated projects (create.sh output)
+# Keep only template/, not scaffolded projects
+*.generated/

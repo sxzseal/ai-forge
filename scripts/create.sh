@@ -33,9 +33,23 @@ if [[ -z "$PROJECT_NAME" ]]; then
   exit 1
 fi
 
+# Reject flags passed as project name
+if [[ "$PROJECT_NAME" == -* ]]; then
+  error "项目名不能以连字符开头（当前值：$PROJECT_NAME）"
+fi
+
 # Validate project name: lowercase letters, digits, hyphens only; no leading/trailing hyphen
 if [[ ! "$PROJECT_NAME" =~ ^[a-z0-9][a-z0-9-]*[a-z0-9]$ ]] && [[ ! "$PROJECT_NAME" =~ ^[a-z0-9]$ ]]; then
   error "项目名格式无效：只能包含小写字母、数字和连字符，且不能以连字符开头或结尾（当前值：$PROJECT_NAME）"
+fi
+
+# Check Node.js version
+if ! command -v node &>/dev/null; then
+  error "未找到 Node.js，请安装 Node.js 18+ → https://nodejs.org"
+fi
+NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
+if [[ "$NODE_MAJOR" -lt 18 ]]; then
+  error "Node.js 版本过低（当前 v$(node -v)），需要 >= 18"
 fi
 
 # Locate template directory (relative to this script)
@@ -75,6 +89,11 @@ if [[ -d "$PROJECT_DIR/_storybook" ]]; then
   ok "Renamed _storybook → .storybook"
 fi
 
+if [[ -d "$PROJECT_DIR/_github" ]]; then
+  mv "$PROJECT_DIR/_github" "$PROJECT_DIR/.github"
+  ok "Renamed _github → .github"
+fi
+
 # Copy Dev Loop skills & commands from ai-forge into the project
 info "Copying Dev Loop skills..."
 mkdir -p "$PROJECT_DIR/.claude/skills" "$PROJECT_DIR/.claude/commands"
@@ -99,9 +118,11 @@ find "$PROJECT_DIR" -type f \( \
   -name "*.ts" -o \
   -name "*.tsx" -o \
   -name "*.js" -o \
+  -name "*.mjs" -o \
   -name "*.md" -o \
   -name "*.toml" -o \
-  -name "*.css" \
+  -name "*.css" -o \
+  -name "*.yml" \
 \) -exec grep -l "__PROJECT_NAME__" {} \; 2>/dev/null | while read -r file; do
   sed -i '' "s/__PROJECT_NAME__/$PROJECT_NAME_ESC/g" "$file" 2>/dev/null || \
   sed -i "s/__PROJECT_NAME__/$PROJECT_NAME_ESC/g" "$file"
@@ -148,10 +169,11 @@ else
   info "Installing dependencies (this may take a minute)..."
 fi
 
-cd "$PROJECT_DIR"
+pushd "$PROJECT_DIR" > /dev/null
 if ! $PKG_MGR install 2>&1 | tail -5; then
   error "$PKG_MGR install 失败，请检查网络连接或 Node.js 版本（需要 >= 18）\n提示：可尝试添加淘宝镜像 → echo 'registry=https://registry.npmmirror.com' >> ~/.npmrc"
 fi
+popd > /dev/null
 
 ok "Dependencies installed"
 
@@ -166,19 +188,23 @@ if [[ "$PKG_MGR" == "pnpm" ]]; then
 else
   MSW_INIT="npx msw init"
 fi
+
+pushd "$PROJECT_DIR" > /dev/null
 if ! $MSW_INIT "$PROJECT_DIR/public/" --save 2>&1 | tail -3; then
   warn "MSW 初始化失败，请手动执行：$MSW_INIT public/ --save"
   warn "项目已创建，但 Storybook 原型和测试的 API 模拟需要手动初始化"
 fi
+popd > /dev/null
 ok "MSW initialized"
 
-# ── Step 7: Initialize git ─────────────────────────────────────
+# ── Step 6: Initialize git ─────────────────────────────────────
 
 info "Initializing git repository..."
-cd "$PROJECT_DIR"
+pushd "$PROJECT_DIR" > /dev/null
 git init -q
 git add -A
 git commit -q -m "feat: initial project from ai-forge template"
+popd > /dev/null
 
 ok "Git repository initialized"
 
