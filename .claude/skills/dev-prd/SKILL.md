@@ -1,6 +1,6 @@
 ---
 name: dev-prd
-description: 从自然语言需求生成结构化 PRD 文档，输出到 .loop/prd.md。触发词："写 PRD"、"生成需求文档"、"需求分析"、"dev-prd"、"产品需求文档"。可独立使用，也可被 /dev-loop 调用。
+description: 从自然语言需求生成结构化 PRD 文档，输出到 .loop/prd.md。触发词："写 PRD"、"生成需求文档"、"需求分析"、"dev-prd"、"产品需求文档"。独立 skill，可作为 /dev-loop 的可选补充。
 ---
 
 # Dev PRD — 需求文档生成器
@@ -12,7 +12,7 @@ description: 从自然语言需求生成结构化 PRD 文档，输出到 .loop/p
 - 「写 PRD」「生成 PRD」「产品需求文档」
 - 「需求分析」「需求文档」「生成需求文档」
 - 「dev-prd」
-- 被 `/dev-loop` 作为 Phase 1 调用
+- 用户主动调用此 skill 生成结构化需求文档（**独立 skill**，不在 `/dev-loop` 默认管线中）
 
 **不启用**：
 
@@ -46,23 +46,20 @@ ls -la
 mkdir -p .loop/prototype .loop/dev .loop/review .loop/test .loop/deploy
 ```
 
-如果 `.loop/session.json` 不存在，初始化：
+如果 `.loop/session.json` 不存在，初始化（dev-prd 是独立 skill，phases 只列三阶段管线，PRD 作为独立 artifact 记录）：
 
 ```json
 {
   "id": "loop-YYYYMMDD-NNN",
   "requirement": "<用户原始需求>",
   "createdAt": "<ISO timestamp>",
-  "currentPhase": "prd",
+  "currentPhase": "prototype",
   "phases": {
-    "clarify": { "status": "completed" },
-    "prd": { "status": "in_progress" },
     "prototype": { "status": "pending" },
     "dev": { "status": "pending" },
-    "review": { "status": "pending" },
-    "test": { "status": "pending" },
     "deploy": { "status": "pending" }
-  }
+  },
+  "artifacts": {}
 }
 ```
 
@@ -306,20 +303,23 @@ API 端点：<N> 个
 
 ### Step 5：更新 session.json
 
-确认通过后，更新 `.loop/session.json`：
+dev-prd 是**独立 skill**，不接管 `/dev-loop` 阶段流转。只记录 PRD artifact，**不修改** `currentPhase`：
 
 ```json
 {
-  "currentPhase": "prototype",
-  "phases": {
-    "prd": { "status": "completed", "completedAt": "<ISO timestamp>" }
-  },
   "artifacts": {
     "prd": ".loop/prd.md",
     "apiContractsJson": ".loop/api-contracts.json"
+  },
+  "lastPrd": {
+    "completedAt": "<ISO timestamp>",
+    "userStories": <N>,
+    "endpoints": <N>
   }
 }
 ```
+
+> 如果用户先跑 `/dev-prd` 再跑 `/dev-loop`，原型阶段会读取 `.loop/prd.md` 作为补充上下文，不重复生成。
 
 ---
 

@@ -140,14 +140,10 @@ cat > "$PROJECT_DIR/.loop/session.json" <<EOF
   "id": "loop-$(date +%Y%m%d)-001",
   "requirement": "",
   "createdAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "currentPhase": "clarify",
+  "currentPhase": "prototype",
   "phases": {
-    "clarify": { "status": "pending" },
-    "prd": { "status": "pending" },
     "prototype": { "status": "pending" },
     "dev": { "status": "pending" },
-    "review": { "status": "pending" },
-    "test": { "status": "pending" },
     "deploy": { "status": "pending" }
   },
   "artifacts": {}

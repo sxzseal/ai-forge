@@ -11,12 +11,11 @@ description: 管理 Vercel (前端) + Railway (后端) 部署，支持 preview /
 
 - 「部署」「发布」「上线」「部署上线」
 - 「dev-deploy」
-- 被 `/dev-loop` 作为 Phase 6 调用
+- 被 `/dev-loop` 作为 Phase 3 调用
 
 **前置条件**：
 
-- 代码已编译通过
-- 测试已通过（建议，非强制）
+- 代码已编译通过（`npm run build` / `tsc --noEmit` 通过）
 - CLI 工具已安装（vercel, railway）
 
 **不启用**：
@@ -42,53 +41,47 @@ git branch --show-current
 
 如果有未提交改动，提醒用户先提交。
 
-**检查测试状态**：
+**构建检查**（强制）：
 
 ```bash
-# 如果有测试
+# 类型检查
+npx tsc --noEmit
+
+# 构建
+npm run build
+```
+
+构建失败则**阻止部署**，提示用户修复。
+
+**验收覆盖检查**（来自 dev-dev 阶段，软门控）：
+
+```bash
+cat .loop/dev/acceptance-coverage.md 2>/dev/null
+```
+
+若存在未实现的 AC 项，警告用户但不阻止 Preview/Staging；**Production 部署需用户明确确认接受未覆盖项**。
+
+**可选检查**（用户手动跑了独立 review/test 时才生效）：
+
+```bash
+# 如果手动跑过 /dev-review（结果记录在 session.json.lastReview）
+cat .loop/review/findings.md 2>/dev/null | grep "CRITICAL"
+
+# 如果手动跑过 /dev-test（结果记录在 session.json.lastTest）
 cat .loop/test/coverage-report.md 2>/dev/null | head -20
 ```
 
-如果测试报告存在且有失败测试，警告用户。
-
-**检查代码审查状态**：
-
-```bash
-# 如果有审查报告
-cat .loop/review/findings.md 2>/dev/null | grep "CRITICAL"
-```
-
-如果有未解决的 CRITICAL issue，警告用户。
+- 有未解决 CRITICAL issue → **阻止 Production 部署**，可继续 Preview/Staging
+- 测试有失败 → 警告但不阻止
 
 **检查 API 契约一致性**：
 
 ```bash
 # 检查 API 契约 JSON 是否存在
 cat .loop/api-contracts.json 2>/dev/null | head -5 || echo "NO_API_CONTRACTS_JSON"
-
-# 检查 PRD 修订状态
-cat .loop/session.json 2>/dev/null | grep -A 5 '"prdRevisions"'
 ```
 
-如果 `.loop/api-contracts.json` 不存在但 PRD 包含 API 契约，警告用户 API 契约未机器化，可能导致前后端不一致。
-
-如果 `session.json` 中有 `prdRevisions[]` 且存在 `status: "pending_user_decision"` 的条目，**阻止 Production 部署**，提示用户先处理 PRD 歧义：
-
-```
-⚠️ 存在未处理的 PRD 歧义/缺陷（N 条）
-   在部署到生产前，请先确认：
-   - 回到 dev-prd 修订 PRD + api-contracts.json
-   - 或在 findings.md 中标记为"已接受，无需修改"
-```
-
-**检查 P0 功能覆盖率**（如有测试报告）：
-
-```bash
-# 检查 P0 覆盖率
-cat .loop/test/coverage-report.md 2>/dev/null | grep "P0 覆盖率"
-```
-
-如果 P0 覆盖率 < 100%，Production 部署前需用户明确确认接受。
+如果 `.loop/api-contracts.json` 不存在，警告用户契约未机器化，可能导致前后端不一致。
 
 **检查 CLI 工具**：
 
@@ -300,12 +293,13 @@ curl -s -o /dev/null -w "%{http_code}" "https://${RAILWAY_URL}/api/health"
 后端：https://xxx.up.railway.app ✅
 
 本次 Loop 总结：
-  Phase 1: PRD — <N> 个用户故事
-  Phase 2: 原型 — <N> 个 Stories
-  Phase 3: 开发 — <N> 次 commit
-  Phase 4: 审查 — CRITICAL 0, HIGH 0
-  Phase 5: 测试 — 通过率 100%, 覆盖率 <N>%
-  Phase 6: 部署 — 健康检查通过
+  Phase 1: 原型 — <N> 个 Stories，<N> 轮标注迭代
+  Phase 2: 开发 — <N> 次 commit，验收清单覆盖 <n>/<m>
+  Phase 3: 部署 — 健康检查通过
+
+  附加（如手动跑过）：
+    dev-review：CRITICAL <n>, HIGH <n>
+    dev-test：通过率 <N>%，P0 覆盖率 <N>%
 
 报告：.loop/deploy/checklist.md
 ```

@@ -2,22 +2,22 @@ import { describe, expect, it } from 'vitest'
 import { GET } from '@/app/api/health/route'
 
 describe('GET /api/health', () => {
-  it('returns status ok', async () => {
+  it('returns success envelope with status ok', async () => {
     const response = await GET()
     const body = await response.json()
 
     expect(response.status).toBe(200)
-    expect(body.status).toBe('ok')
-    expect(body.timestamp).toBeDefined()
-    expect(typeof body.timestamp).toBe('string')
+    expect(body.status_code).toBe(0)
+    expect(body.data).toBeDefined()
+    expect(body.data.status).toBe('ok')
   })
 
   it('returns a valid ISO timestamp', async () => {
     const response = await GET()
     const body = await response.json()
 
-    // Should be a valid ISO 8601 date string
-    const parsed = new Date(body.timestamp)
+    expect(typeof body.data.timestamp).toBe('string')
+    const parsed = new Date(body.data.timestamp)
     expect(parsed.toString()).not.toBe('Invalid Date')
   })
 
@@ -25,7 +25,7 @@ describe('GET /api/health', () => {
     const response = await GET()
     const body = await response.json()
 
-    expect(body.version).toBeDefined()
-    expect(typeof body.version).toBe('string')
+    expect(typeof body.data.version).toBe('string')
+    expect(body.data.version.length).toBeGreaterThan(0)
   })
 })

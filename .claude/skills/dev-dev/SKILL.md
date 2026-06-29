@@ -1,6 +1,6 @@
 ---
 name: dev-dev
-description: 从 PRD 和原型出发，使用 lobster-lead 模式拆解任务、并行派发 subagent 开发、checkpoint 提交。触发词："开始开发"、"dev-dev"、"实现功能"。被 /dev-loop 作为 Phase 3 调用。
+description: 从验收清单 + 原型出发，使用 lobster-lead 模式拆解任务、并行派发 subagent 开发、checkpoint 内嵌轻量自检后提交。触发词："开始开发"、"dev-dev"、"实现功能"。被 /dev-loop 作为 Phase 2 调用。
 ---
 
 # Dev Dev — 开发执行器
@@ -10,16 +10,17 @@ description: 从 PRD 和原型出发，使用 lobster-lead 模式拆解任务、
 用户说出以下任意表达时立即激活：
 
 - 「开始开发」「实现功能」「dev-dev」
-- 被 `/dev-loop` 作为 Phase 3 调用
+- 被 `/dev-loop` 作为 Phase 2 调用
 
-**前置条件**：
+**前置条件**（至少一项满足）：
 
-- `.loop/prd.md` 存在
-- `.loop/prototype/stories-manifest.md` 存在（如果 Phase 2 已完成）
+- `.loop/acceptance-checklist.md` 存在（主输入，由 dev-proto 生成）
+- `.loop/prototype/stories-manifest.md` 存在
+- `.loop/prd.md` 存在（兼容老流程或用户手动跑过 `/dev-prd`）
 
 **不启用**：
 
-- PRD 还没确认
+- 三份输入都不存在（让用户先跑 `/dev-proto`）
 - 用户只是讨论实现方案
 
 ---
@@ -51,16 +52,21 @@ src/features/<domain>/
 
 ### 共享原语（_shared 层）
 
-`src/features/_shared/` 提供可复用的 UI 原语，**任何功能不得重复实现**：
+`src/features/_shared/` 提供可复用的 UI 原语，**任何功能不得重复实现**。模板已自带：
 
-| 目录 | 原语 | 用途 |
-|------|------|------|
+| 子目录 | 模块 | 用途 |
+|--------|------|------|
 | `_shared/state/` | `Loading` / `SkeletonList` / `EmptyState` / `ErrorState` | 通用状态展示 |
 | `_shared/form/` | `FormField` / `formErrorText()` | 表单字段布局 + 错误提取 |
-| `_shared/page/` | `PageHeader` / `SearchToolbar` / `Pagination` | 页面级 UI 骨架 |
-| `_shared/table/` | `DataTable` | TanStack Table 封装 |
 
-> **判断标准**：如果一个组件在 2 个以上 feature 里用到，就提到 `_shared/`；如果只在当前 feature 里用，留在 `components/`。
+按需补齐（首次需要时由 dev-dev 创建，避免预装重型依赖）：
+
+| 子目录 | 模块 | 依赖 |
+|--------|------|------|
+| `_shared/page/` | `PageHeader` / `SearchToolbar` / `Pagination` | 无 |
+| `_shared/table/` | `DataTable` | TanStack Table（按需 `npm i @tanstack/react-table`） |
+
+> 判断标准：组件在 2 个以上 feature 用到 → 提到 `_shared/`；只在当前 feature 用 → 留在 `components/`。
 
 ### 文件命名约定
 
@@ -75,7 +81,21 @@ src/features/<domain>/
 
 ### 前端代码规范
 
-**数据加载（loader → useSuspenseQuery 模式）**：
+**数据加载** — 模板不预装数据请求库，按需选择：
+
+| 场景 | 推荐方案 | 说明 |
+|------|---------|------|
+| 简单组件 + 一次性获取 | 服务端组件直接 `await request<T>(...)` | 使用 `src/lib/request.ts` |
+| 复杂客户端交互 + 缓存 + invalidate | TanStack Query (`useSuspenseQuery` + `useMutation`) | 首次需要时 `npm i @tanstack/react-query` |
+
+**首次引入 TanStack Query 时**，dev-dev 应：
+
+1. 确认是否安装：`grep '@tanstack/react-query' package.json`
+2. 未安装则询问用户，安装后再开始
+3. 安装后建立 `lib/query-client.ts` + `app/providers.tsx`（包 `QueryClientProvider`）
+4. 后续 feature 才能用 `queries.ts` + `mutations.ts` 模式
+
+**TanStack Query 模式（已安装时）**：
 
 路由层预取数据，组件层用 `useSuspenseQuery` 读取：
 
@@ -102,10 +122,13 @@ function TeamManageView() {
 }
 ```
 
-**Query 工厂（集中管理 queryKey + queryFn）**：
+**Query 工厂**：
 
 ```ts
 // features/<domain>/queries.ts
+import { queryOptions } from '@tanstack/react-query'
+import { request } from '@/lib/request'
+
 export const <domain>Queries = {
   overview: () => queryOptions({
     queryKey: ['<domain>', 'overview'] as const,
@@ -113,7 +136,7 @@ export const <domain>Queries = {
   }),
   list: (params: ListParams) => queryOptions({
     queryKey: ['<domain>', 'list', params] as const,
-    queryFn: () => request<PaginatedResponse<Item>>('/api/<resource>', {
+    queryFn: () => request<PaginatedData<Item>>('/api/<resource>', {
       query: { page: params.page, page_size: params.pageSize },
     }),
   }),
@@ -124,13 +147,16 @@ export const <domain>Queries = {
 
 ```ts
 // features/<domain>/mutations.ts
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { request } from '@/lib/request'
+
 export function useUpdateMutation() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (body: UpdateBody) =>
       request('/api/<resource>/id', { method: 'PUT', body }),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['<domain>'] }) // 级联刷新
+      void qc.invalidateQueries({ queryKey: ['<domain>'] })
       toast.success('更新成功')
     },
   })
@@ -148,18 +174,22 @@ export function useUpdateMutation() {
 **useEffect 规则**：
 
 - 组件本体**禁止裸 `useEffect`**，必须抽到命名 hook（`useXxx`）
-- **禁止 `useEffect` + `fetch`** 做数据拉取，用 `loader` / `useQuery`
-- 数据请求统一走 `request<T>()`（ofetch 封装），不直接用裸 `fetch`
+- **禁止 `useEffect` + `fetch`** 做数据拉取，用服务端组件 `await request<T>()` 或 TanStack Query
+- 数据请求统一走 `request<T>()`（见 `src/lib/request.ts`），不直接用裸 `fetch`
 
-**表单（TanStack Form + FormField + formErrorText）**：
+**表单** — 模板不预装表单库，按需选择：
+
+- 简单表单：原生 `<form>` + `useState` + `FormField`
+- 复杂表单（多字段校验、依赖字段）：TanStack Form（按需 `npm i @tanstack/react-form`）
+
+**TanStack Form + FormField 模式（已安装时）**：
 
 ```tsx
-import { FormField } from '@/features/_shared/form/form-field'
-import { formErrorText } from '@/features/_shared/form/form-error'
+import { FormField, formErrorText } from '@/features/_shared/form/form-field'
 
 <form.Field name="email">
   {(field) => (
-    <FormField label="邮箱" required error={formErrorText(field)}>
+    <FormField label="邮箱" required error={formErrorText(field.state.meta)}>
       <Input
         value={field.state.value}
         onChange={(e) => field.handleChange(e.target.value)}
@@ -172,23 +202,18 @@ import { formErrorText } from '@/features/_shared/form/form-error'
 
 ### 后端代码规范（Next.js API Routes）
 
-**统一响应格式**：
+**统一响应格式** — 类型定义和工具函数已在模板 `src/lib/api-response.ts`：
 
 ```ts
-// lib/api-response.ts
-interface ApiResponse<T> {
-  status_code: number  // 0 或 200 = 成功，其余 = 业务错误
-  message?: string
-  data: T
-}
-
-interface PaginatedResponse<T> {
-  list: T[]
-  total: number
-  page: number
-  page_size: number
-}
+import type { ApiResponse, PaginatedData } from '@/lib/api-response'
+import { ok, err } from '@/lib/api-response'
 ```
+
+约定：
+- `status_code: 0` 表示成功，非 0 为业务错误
+- 分页响应统一用 `PaginatedData<T> = { list, total, page, page_size }`
+- 业务错误 HTTP 状态 = `status_code`；系统错误 HTTP 500 不泄漏细节
+- 直接用 `ok(data)` / `err(status, message)` 返回，不手写 `NextResponse.json` 信封
 
 **请求校验（Zod）**：
 
@@ -202,11 +227,12 @@ export const createResourceSchema = z.object({
 })
 ```
 
-**API Route 模板（Next.js App Router）**：
+**API Route 模板**：
 
 ```ts
 // app/api/<resource>/route.ts
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
+import { ok, err, type PaginatedData } from '@/lib/api-response'
 import { createResourceSchema } from '@/lib/validators/<resource>'
 
 export async function GET(request: NextRequest) {
@@ -214,33 +240,24 @@ export async function GET(request: NextRequest) {
   const page = Number(searchParams.get('page') || 1)
   const pageSize = Number(searchParams.get('page_size') || 10)
   // ... 查询逻辑
-  return NextResponse.json<ApiResponse<PaginatedResponse<Item>>>({
-    status_code: 0,
-    data: { list: items, total, page, page_size: pageSize },
-  })
+  return ok<PaginatedData<Item>>({ list: items, total, page, page_size: pageSize })
 }
 
 export async function POST(request: NextRequest) {
   const body = await request.json()
   const parsed = createResourceSchema.safeParse(body)
   if (!parsed.success) {
-    return NextResponse.json<ApiResponse<null>>(
-      { status_code: 400, message: parsed.error.issues[0].message, data: null },
-      { status: 400 }
-    )
+    return err(400, parsed.error.issues[0].message)
   }
   // ... 创建逻辑
-  return NextResponse.json<ApiResponse<Item>>(
-    { status_code: 0, data: newItem },
-    { status: 201 }
-  )
+  return ok(newItem, { status: 201 })
 }
 ```
 
 **错误处理**：
-- 业务错误：返回 `status_code: 4xx` + `message`，HTTP 状态对应
+- 业务错误：`err(4xx, message)`，HTTP 状态与 `status_code` 对应
 - 系统错误：HTTP 500，不泄漏内部细节
-- 认证失败：HTTP 401，前端 `request()` 拦截后统一跳转登录
+- 认证失败：`err(401, ...)`，前端 `request()` 抛 `UnauthorizedError`，上层统一拦截跳转登录
 
 ### Import 约定
 
@@ -265,30 +282,38 @@ export async function POST(request: NextRequest) {
 ### Step 0：读取上下文
 
 ```bash
-# 读取 PRD
-cat .loop/prd.md
+# 主输入：验收清单（dev-proto 产出，每条 AC 都要有对应实现）
+cat .loop/acceptance-checklist.md 2>/dev/null
 
-# 读取 API 契约 JSON（优先）
+# API 契约 JSON（与原型 handlers 对齐）
 cat .loop/api-contracts.json 2>/dev/null || echo "NO_API_CONTRACTS_JSON"
 
-# 读取 Stories Manifest（如果存在）
+# Stories Manifest（Story → Feature 映射来源）
 cat .loop/prototype/stories-manifest.md 2>/dev/null
+
+# 可选补充：PRD（若用户手动跑过 /dev-prd）
+cat .loop/prd.md 2>/dev/null
 
 # 检查当前代码状态
 git status
 git log --oneline -5
 ```
 
-从 PRD 提取：
-- Section 4: 用户故事 + 验收标准
-- Section 5: 功能需求（含优先级）
-- Section 7: API 契约（**优先读 `.loop/api-contracts.json`，字段名、类型、required 以 JSON 为准**）
-- Section 8: UI 规格 + 组件拆分
+**优先级**：
+
+1. `.loop/acceptance-checklist.md` — 每条 AC 都是开发完成的判据，没覆盖就不算做完
+2. `.loop/api-contracts.json` — API 字段名、类型、错误码以此为准
+3. `.loop/prototype/stories-manifest.md` — 复用 story 组件结构
+4. `.loop/prd.md`（如有）— 仅作补充上下文，不与上面三份冲突
+
+从验收清单提取：
+- 验收项分类（页面交互 / 数据契约 / 视觉 / 边界 / 不做清单）
+- 每条 AC 编号 + 描述（开发完成时要对照 check）
 
 从 Stories Manifest 提取，**建立 Story → Feature 组件预映射**：
 - 已有 story 文件列表（`src/stories/<project>/`）
 - 每个 story 的交互流程（play functions）
-- 与 PRD 用户故事的映射关系
+- 与验收项的映射关系
 
 **Story → Feature 预映射表**（在任务拆解前建立，供 Step 4 component-map.md 使用）：
 
@@ -301,22 +326,22 @@ Story → Feature 预映射
 | src/stories/<project>/<dialog>.stories.tsx | <project> / <弹窗名> | features/<domain>/views/dialogs/ | 部分复用 |
 ```
 
-> 映射方式：**完全复用**（story 组件结构直接用于 view）/ **部分复用**（story 提供布局参考，view 需扩展）/ **无对应 story**（PRD 要求但原型未覆盖）。
+> 映射方式：**完全复用**（story 组件结构直接用于 view）/ **部分复用**（story 提供布局参考，view 需扩展）/ **无对应 story**（验收清单要求但原型未覆盖）。
 
 ---
 
 ### Step 1：任务拆解（lobster-lead Phase 1）
 
-基于 PRD 和原型，按 **feature module 结构**拆解为任务树：
+基于验收清单 + Stories Manifest，按 **feature module 结构**拆解为任务树：
 
 ```
 🦞 任务拆解
 ──────────────────────────────
 
 [1] 基础设施层（依赖：无）
-    ├── lib/api-response.ts         — 统一响应类型
-    ├── lib/validators/<resource>.ts — Zod 请求校验 schema
-    └── lib/request.ts              — ofetch 封装（如不存在则创建）
+    ├── lib/api-response.ts          ← 模板已自带，无需新建
+    ├── lib/request.ts               ← 模板已自带，无需新建
+    └── lib/validators/<resource>.ts — Zod 请求校验 schema（新增）
 
 [2] 后端 API 层（依赖：1）
     ├── app/api/<resource>/route.ts  — GET（列表 + 分页）
@@ -325,26 +350,34 @@ Story → Feature 预映射
     └── 错误处理 + 认证中间件
 
 [3] 前端 feature 模块（依赖：2）
-    ├── features/<domain>/queries.ts      — 类型定义 + queryOptions 工厂
-    ├── features/<domain>/mutations.ts    — useMutation hooks
+    ├── features/<domain>/queries.ts      — 类型 + 查询（装了 TanStack Query 时用 queryOptions 工厂；否则 export async fn）
+    ├── features/<domain>/mutations.ts    — useMutation hooks（仅在装了 TanStack Query 时存在）
     ├── features/<domain>/views/<f>.view.tsx — 页面视图
     └── features/<domain>/views/dialogs/  — 弹窗组件
 
 [4] 路由集成（依赖：2, 3）
-    ├── app/<route>/page.tsx              — 路由页面（loader + Suspense）
+    ├── app/<route>/page.tsx              — 路由页面（服务端组件预取或 Suspense）
     └── 错误边界 error.tsx                — 路由级错误兜底
 
 依赖图：[1] → [2] → 并行：[3] → [4]
+
+验收清单覆盖映射：
+| AC 编号 | 验收项 | 对应任务 |
+|--------|--------|---------|
+| AC-001 | 页面渲染 | [3][4] |
+| AC-101 | GET /api/<resource> | [2] |
+| ... | ... | ... |
 ```
 
 > 每个任务对应的文件路径参见上方「开发约定」章节。
+> 任务拆解必须覆盖验收清单中所有验收项，不能遗漏。
 
 **STOP** — 用 `AskUserQuestion` 让用户确认任务拆解：
 
 选项：
 - **确认，开始开发**：任务拆解没问题
 - **调整任务**：修改任务列表
-- **只做核心**：只实现 P0 功能需求
+- **只做核心**：只实现 P0 验收项（如 AC-001 ~ AC-099）
 
 ---
 
@@ -357,17 +390,18 @@ Story → Feature 预映射
 | 任务 | Agent 类型 | 说明 |
 |------|-----------|------|
 | 数据层 | `general-purpose` | Prisma schema / TypeScript 类型 / Zod 校验 |
-| API 路由 | `general-purpose` | Next.js API routes，参照 PRD Section 7 |
+| API 路由 | `general-purpose` | Next.js API routes，参照验收清单 + api-contracts.json |
 | 前端组件 | `general-purpose` | 基于原型 Stories 实现真实组件 |
 | 页面集成 | `general-purpose` | 路由 + 组件串联 + 错误边界 |
 
 **并行规则**：
+
 - 无依赖的任务在同一条消息里并行派发
 - 有依赖的任务等前置完成后串行执行
 
 **每个 subagent 的 prompt 必须包含**：
 1. 项目技术栈（Next.js App Router + shadcn/ui + TypeScript）
-2. 具体的 PRD 需求摘要（相关的用户故事和验收标准）
+2. 该任务对应的验收清单条目（AC-XXX）和原型 Story 文件路径
 3. 要创建/修改的文件路径（按 feature module 结构）
 4. **代码规范引用**（直接内联以下关键规则）：
    - 统一响应格式：`{ status_code, message, data }`
@@ -381,23 +415,37 @@ Story → Feature 预映射
 
 ---
 
-### Step 3：验证 + Checkpoint
+### Step 3：Checkpoint 内嵌自检 + 提交
 
 **每个子任务完成后**：
 
 1. `TaskUpdate` 标记完成
 2. `Read` 实际修改的文件，验证改动
-3. 运行类型检查：
+3. **运行 checkpoint 自检脚本**（替代独立 review 阶段的轻量版）：
 
-```bash
-npx tsc --noEmit
-```
+   ```bash
+   # 类型检查
+   npx tsc --noEmit
+   ```
 
-4. 如果通过，checkpoint commit：
+   并对刚改的文件做**4 项快速自检**（grep + 人工判断）：
 
-```bash
-# 调用 /smart-commit
-```
+   | 检查项 | 命令 / 标准 | 不通过时 |
+   |-------|-----------|---------|
+   | 禁用 `any` / `@ts-ignore` | `grep -nE '\b(any\b\|@ts-ignore\|@ts-expect-error)' <files>` | 直接修复，不留 |
+   | 裸 `useEffect + fetch` | `grep -nE 'useEffect\([^)]*fetch\(' <files>` | 改用服务端组件 / TanStack Query |
+   | mutation 后忘记 invalidate | 仅在装了 TanStack Query 且修改了 `mutations.ts` 时检查：`grep -L 'invalidateQueries' <mutations.ts>` | 补 `invalidateQueries` |
+   | API 响应格式 | grep route.ts 是否用了 `ok(` / `err(` 而非裸 `NextResponse.json` 信封 | 改用 `ok` / `err` |
+
+4. 自检全部通过 → checkpoint commit：
+
+   ```bash
+   # 调用 /smart-commit
+   ```
+
+5. 自检不通过 → 修复后重跑，**不放过到下一任务**。
+
+> 这里的自检只是「门槛级」检查。要做深度安全 / 性能 / 架构审查，用户手动跑 `/dev-review`。
 
 ---
 
@@ -460,7 +508,7 @@ git diff --stat
 
 - ✅ **完全复用**：Story 的组件结构直接用于 view，只替换 mock 数据为真实 API 调用
 - 🔄 **部分复用**：Story 提供布局/表单结构参考，view 需扩展（如增加表单校验、错误处理）
-- ❌ **无对应 Story**：PRD 要求但原型未覆盖，需从头实现
+- ❌ **无对应 Story**：验收清单要求但原型未覆盖，需从头实现
 
 ## 覆盖统计
 
@@ -506,17 +554,33 @@ git diff --stat
 组件：<N> 个
 API 路由：<N> 个
 Commits：<N> 次
+验收清单覆盖：<n>/<m>（<n>% 已实现）
 
 文档：
   - .loop/dev/task-breakdown.md
   - .loop/dev/component-map.md
   - .loop/dev/api-contracts.md
+  - .loop/dev/acceptance-coverage.md
+```
+
+**额外输出验收覆盖报告** `.loop/dev/acceptance-coverage.md`：
+
+```markdown
+# 验收清单覆盖情况
+
+| AC 编号 | 验收项 | 实现位置 | 状态 |
+|--------|--------|---------|------|
+| AC-001 | 页面渲染 | features/<domain>/views/<f>.view.tsx | ✅ |
+| AC-101 | GET /api/<resource> | app/api/<resource>/route.ts | ✅ |
+| AC-102 | POST 校验 name 必填 | lib/validators/<resource>.ts | ✅ |
+| AC-301 | 空状态显示 | features/<domain>/views/<f>.view.tsx | ⚠️ 待补 |
 ```
 
 用 `AskUserQuestion` 询问：
-- **确认，进入审查**：开发完毕，进入 code review
-- **补充开发**：还需要实现更多功能
-- **修复问题**：有 bug 需要修
+- **确认，进入部署**：开发完毕，验收清单已覆盖
+- **补充开发**：还有 AC 项未实现
+- **深度审查**：先跑 `/dev-review` 再继续
+- **生成测试**：先跑 `/dev-test` 再继续
 
 ---
 
@@ -524,17 +588,18 @@ Commits：<N> 次
 
 ```json
 {
-  "currentPhase": "review",
+  "currentPhase": "deploy",
   "phases": {
     "dev": { "status": "completed", "completedAt": "<ISO timestamp>" }
   },
   "artifacts": {
-    "prd": ".loop/prd.md",
+    "acceptanceChecklist": ".loop/acceptance-checklist.md",
     "apiContractsJson": ".loop/api-contracts.json",
     "storiesManifest": ".loop/prototype/stories-manifest.md",
     "taskBreakdown": ".loop/dev/task-breakdown.md",
     "componentMap": ".loop/dev/component-map.md",
-    "apiContracts": ".loop/dev/api-contracts.md"
+    "apiContracts": ".loop/dev/api-contracts.md",
+    "acceptanceCoverage": ".loop/dev/acceptance-coverage.md"
   }
 }
 ```
@@ -543,20 +608,21 @@ Commits：<N> 次
 
 ## 红线（不可违反）
 
-1. **必须从 PRD 拆解任务** — 不凭空开发
-2. **独立任务必须并行** — 同一条消息里并行 Agent 调用
-3. **每个 subagent 完成后必须 Read 验证** — 不盲目信任
-4. **checkpoint 时调用 /smart-commit** — 不积攒大量改动
-5. **类型检查必须通过** — `tsc --noEmit` 零错误
-6. **开发文档必须写入 `.loop/dev/`** — 下游阶段依赖
+1. **必须从验收清单拆解任务** — 每条 AC 都要有对应任务，不凭空开发
+2. **每个 checkpoint 前必须跑 `tsc --noEmit` + 4 项快速自检** — 类型错误和明显违规不进 commit
+3. **独立任务必须并行** — 同一条消息里并行 Agent 调用
+4. **每个 subagent 完成后必须 Read 验证** — 不盲目信任
+5. **checkpoint 时调用 /smart-commit** — 不积攒大量改动
+6. **开发文档必须写入 `.loop/dev/`** — 下游 deploy 阶段依赖；验收覆盖报告必须包含每条 AC 的实现位置
 7. **不跳过用户确认** — 任务拆解和完成都需要确认
 8. **代码必须按 feature module 组织** — `features/<domain>/queries.ts` + `mutations.ts` + `views/`，不把所有代码堆在 `components/`
 9. **共享原语从 `_shared/` 导入** — FormField、SearchToolbar、DataTable 等不重复实现
 10. **mutation 后必须 invalidateQueries** — 不手动 `refetch`，不遗漏缓存刷新
 11. **禁止裸 `useEffect` + `fetch`** — 数据拉取走 loader / `useQuery` / `useSuspenseQuery`
 12. **禁止 `any` / `as any` / `@ts-ignore`** — TypeScript 严格模式，catch 用 `unknown`
-13. **API 响应统一格式** — `{ status_code, message, data }`，Zod 校验后返回，不直接透传内部错误
+13. **API 响应统一格式** — 所有 `/api/*` route 用 `ok()` / `err()`（`src/lib/api-response.ts`），不手写 `NextResponse.json` 信封
 14. **URL 状态用 searchParams** — 刷新后仍需保留的状态不存 `useState`
+15. **API 字段以 `.loop/api-contracts.json` 为准** — 不在开发阶段悄悄改字段，要改先回 dev-proto 同步契约
 
 ---
 
@@ -564,8 +630,9 @@ Commits：<N> 次
 
 | 情况 | 处理方式 |
 |------|---------|
-| PRD 没有 API 契约 | 基于功能需求推导 API 设计，需用户确认 |
-| Stories Manifest 不存在 | 直接从 PRD 开发，跳过原型参考 |
+| 验收清单不存在 | 让用户先跑 `/dev-proto` 生成；不允许凭空开发 |
+| 验收清单没有 API 契约相关条目 | 基于 `.loop/api-contracts.json` 推导，没契约则用功能需求推导，需用户确认 |
+| Stories Manifest 不存在 | 直接从验收清单开发，跳过原型参考 |
 | 构建失败 | 用 `build-error-resolver` agent 修复 |
 | 子任务依赖阻塞 | 等待前置任务完成，不跳过 |
 | 改动文件超过 20 个 | 检查是否需要拆分任务 |
@@ -574,3 +641,4 @@ Commits：<N> 次
 | 项目没有 `request.ts` 封装 | 先创建 `lib/request.ts`（ofetch 封装 + 统一错误处理），再写 API 调用 |
 | 功能只需展示无需写操作 | 只写 `queries.ts` + `view.tsx`，跳过 `mutations.ts` |
 | `_shared/` 原语不满足需求 | 在当前 feature `components/` 里扩展，不直接改 `_shared/`（需用户确认后才改） |
+| 开发中发现验收清单与原型不一致 | 优先信原型，停下来回 dev-proto 修订验收清单和契约 |
