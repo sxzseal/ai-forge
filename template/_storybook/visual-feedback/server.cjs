@@ -17,6 +17,7 @@ const path = require('path')
 const PORT = Number(process.env.VF_PORT) || 6007
 const ORIGIN = process.env.VF_ORIGIN || 'http://localhost:6006'
 const ANNOTATIONS_DIR = path.resolve(process.cwd(), '.loop/annotations')
+const MAX_BODY_BYTES = 1_000_000
 
 function ensureDir() {
   if (!fs.existsSync(ANNOTATIONS_DIR)) {
@@ -26,7 +27,7 @@ function ensureDir() {
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', ORIGIN)
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 }
 
@@ -44,10 +45,29 @@ function safeSlug(input) {
     .slice(0, 80)
 }
 
+function resolveAnnotationPath(rawName) {
+  const safe = path.basename(rawName)
+  if (safe !== rawName) return null
+  if (!safe.endsWith('.json')) return null
+  const full = path.resolve(ANNOTATIONS_DIR, safe)
+  const rel = path.relative(ANNOTATIONS_DIR, full)
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return null
+  return { safe, full }
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = []
-    req.on('data', (c) => chunks.push(c))
+    let total = 0
+    req.on('data', (c) => {
+      total += c.length
+      if (total > MAX_BODY_BYTES) {
+        req.destroy()
+        reject(new Error('request body too large'))
+        return
+      }
+      chunks.push(c)
+    })
     req.on('end', () => {
       try {
         const raw = Buffer.concat(chunks).toString('utf-8')
@@ -73,6 +93,7 @@ function listAnnotations() {
     try {
       body = JSON.parse(fs.readFileSync(full, 'utf-8'))
     } catch (err) {
+      console.warn(`[visual-feedback] failed to parse ${file}:`, err.message)
       body = { _parseError: String(err) }
     }
     return { file, size: stat.size, mtime: stat.mtime.toISOString(), ...body }
@@ -128,29 +149,29 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'DELETE' && url.pathname.startsWith('/annotations/')) {
-      const filename = decodeURIComponent(url.pathname.slice('/annotations/'.length))
-      if (!filename.endsWith('.json') || filename.includes('..') || filename.includes('/')) {
+      const rawName = decodeURIComponent(url.pathname.slice('/annotations/'.length))
+      const resolved = resolveAnnotationPath(rawName)
+      if (!resolved) {
         send(res, 400, { error: 'invalid filename' })
         return
       }
-      const full = path.join(ANNOTATIONS_DIR, filename)
-      if (!fs.existsSync(full)) {
+      if (!fs.existsSync(resolved.full)) {
         send(res, 404, { error: 'not found' })
         return
       }
-      fs.unlinkSync(full)
+      fs.unlinkSync(resolved.full)
       send(res, 200, { ok: true })
       return
     }
 
     if (req.method === 'PUT' && url.pathname.startsWith('/annotations/')) {
-      const filename = decodeURIComponent(url.pathname.slice('/annotations/'.length))
-      if (!filename.endsWith('.json') || filename.includes('..') || filename.includes('/')) {
+      const rawName = decodeURIComponent(url.pathname.slice('/annotations/'.length))
+      const resolved = resolveAnnotationPath(rawName)
+      if (!resolved) {
         send(res, 400, { error: 'invalid filename' })
         return
       }
-      const full = path.join(ANNOTATIONS_DIR, filename)
-      if (!fs.existsSync(full)) {
+      if (!fs.existsSync(resolved.full)) {
         send(res, 404, { error: 'not found' })
         return
       }
@@ -159,14 +180,14 @@ const server = http.createServer(async (req, res) => {
         send(res, 400, { error: 'feedback is required' })
         return
       }
-      const existing = JSON.parse(fs.readFileSync(full, 'utf-8'))
+      const existing = JSON.parse(fs.readFileSync(resolved.full, 'utf-8'))
       const updated = {
         ...existing,
         feedback: body.feedback,
         updatedAt: new Date().toISOString(),
       }
-      fs.writeFileSync(full, JSON.stringify(updated, null, 2))
-      send(res, 200, { ok: true, file: filename })
+      fs.writeFileSync(resolved.full, JSON.stringify(updated, null, 2))
+      send(res, 200, { ok: true, file: resolved.safe })
       return
     }
 
@@ -184,7 +205,10 @@ const server = http.createServer(async (req, res) => {
 
     send(res, 404, { error: 'not found', method: req.method, path: url.pathname })
   } catch (err) {
-    send(res, 500, { error: String(err && err.message ? err.message : err) })
+    const message = err && err.message ? err.message : String(err)
+    const status = message === 'request body too large' ? 413 : 500
+    console.error('[visual-feedback]', req.method, url.pathname, '→', message)
+    send(res, status, { error: message })
   }
 })
 
