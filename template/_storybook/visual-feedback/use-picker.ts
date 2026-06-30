@@ -5,7 +5,7 @@ import type { PickedElement } from './types'
 export interface UsePickerOptions {
   active: boolean
   enabled: boolean
-  onPick: (picked: PickedElement) => void
+  onPick: (picked: PickedElement, element: Element) => void
 }
 
 export function usePicker({ active, enabled, onPick }: UsePickerOptions) {
@@ -17,18 +17,38 @@ export function usePicker({ active, enabled, onPick }: UsePickerOptions) {
       return
     }
 
+    let raf = 0
+    let pendingTarget: Element | null = null
+
+    const apply = () => {
+      raf = 0
+      const box = hoverRef.current
+      if (!box) return
+      if (!pendingTarget || !pendingTarget.isConnected) {
+        box.style.display = 'none'
+        return
+      }
+      const rect = pendingTarget.getBoundingClientRect()
+      box.style.display = 'block'
+      box.style.transform = `translate(${rect.left}px, ${rect.top}px)`
+      box.style.width = `${rect.width}px`
+      box.style.height = `${rect.height}px`
+    }
+
+    const schedule = () => {
+      if (!raf) raf = requestAnimationFrame(apply)
+    }
+
     const onMove = (e: MouseEvent) => {
       const target = e.target as Element | null
       if (!target || !(target instanceof Element)) return
-      if (target.closest('[data-vf-ui]')) return
-      const rect = target.getBoundingClientRect()
-      const box = hoverRef.current
-      if (!box) return
-      box.style.display = 'block'
-      box.style.left = `${rect.x}px`
-      box.style.top = `${rect.y}px`
-      box.style.width = `${rect.width}px`
-      box.style.height = `${rect.height}px`
+      if (target.closest('[data-vf-ui]')) {
+        pendingTarget = null
+        schedule()
+        return
+      }
+      pendingTarget = target
+      schedule()
     }
 
     const onClick = (e: MouseEvent) => {
@@ -37,14 +57,21 @@ export function usePicker({ active, enabled, onPick }: UsePickerOptions) {
       if (target.closest('[data-vf-ui]')) return
       e.preventDefault()
       e.stopPropagation()
-      onPick(snapshotElement(target))
+      onPick(snapshotElement(target), target)
     }
+
+    const onViewportChange = () => schedule()
 
     document.addEventListener('mousemove', onMove, true)
     document.addEventListener('click', onClick, true)
+    window.addEventListener('scroll', onViewportChange, true)
+    window.addEventListener('resize', onViewportChange)
     return () => {
+      cancelAnimationFrame(raf)
       document.removeEventListener('mousemove', onMove, true)
       document.removeEventListener('click', onClick, true)
+      window.removeEventListener('scroll', onViewportChange, true)
+      window.removeEventListener('resize', onViewportChange)
     }
   }, [active, enabled, onPick])
 
