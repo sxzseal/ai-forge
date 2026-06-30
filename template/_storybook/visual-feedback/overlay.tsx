@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { AnchorBadges, LiveOutline } from './highlights'
 import { AnnotationEditor, AnnotationList } from './panels'
 import * as S from './styles'
 import { useAnnotations } from './use-annotations'
@@ -18,11 +20,13 @@ function Overlay({ storyId, storyTitle }: OverlayProps) {
   const [feedback, setFeedback] = useState('')
   const [status, setStatus] = useState<Status>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [pickedEl, setPickedEl] = useState<Element | null>(null)
 
   const { records, create, update, remove } = useAnnotations()
 
-  const handlePick = useCallback((picked: PickedElement) => {
+  const handlePick = useCallback((picked: PickedElement, element: Element) => {
     setMode({ kind: 'new', picked })
+    setPickedEl(element)
     setFeedback('')
     setStatus('idle')
     setErrorMsg(null)
@@ -30,6 +34,25 @@ function Overlay({ storyId, storyTitle }: OverlayProps) {
 
   const pickerEnabled = mode.kind !== 'edit' && mode.kind !== 'new'
   const hoverRef = usePicker({ active, enabled: pickerEnabled, onPick: handlePick })
+
+  useEffect(() => {
+    if (mode.kind === 'closed' || mode.kind === 'list') {
+      setPickedEl(null)
+      return
+    }
+    if (mode.kind === 'edit') {
+      const sel = mode.record.element?.selector
+      if (!sel) {
+        setPickedEl(null)
+        return
+      }
+      try {
+        setPickedEl(document.querySelector(sel))
+      } catch {
+        setPickedEl(null)
+      }
+    }
+  }, [mode])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -106,14 +129,22 @@ function Overlay({ storyId, storyTitle }: OverlayProps) {
   }
 
   const buttonLabel =
-    active && mode.kind !== 'edit' && mode.kind !== 'new' ? '🎯 标注中' : '📌 标注反馈'
+    active && mode.kind !== 'edit' && mode.kind !== 'new' ? '标注中' : '标注反馈'
   const buttonBg = active ? '#f43f5e' : '#111827'
   const editorElement =
     mode.kind === 'new' ? mode.picked : mode.kind === 'edit' ? mode.record.element : null
 
-  return (
+  if (typeof document === 'undefined') return null
+
+  return createPortal(
     <>
       <div data-vf-ui ref={hoverRef} style={S.HOVER_BOX} />
+
+      {(mode.kind === 'new' || mode.kind === 'edit') && <LiveOutline element={pickedEl} />}
+
+      {active && mode.kind !== 'new' && mode.kind !== 'edit' && (
+        <AnchorBadges records={records} onSelect={openEdit} />
+      )}
 
       <div data-vf-ui style={S.TOOLBAR}>
         {records.length > 0 && (
@@ -123,7 +154,7 @@ function Overlay({ storyId, storyTitle }: OverlayProps) {
             title="查看所有标注"
             style={S.TOOLBAR_COUNT_BTN}
           >
-            📋 {records.length}
+            {records.length} 条标注
           </button>
         )}
         <button
@@ -158,7 +189,8 @@ function Overlay({ storyId, storyTitle }: OverlayProps) {
           onCancel={cancelEditor}
         />
       )}
-    </>
+    </>,
+    document.body,
   )
 }
 

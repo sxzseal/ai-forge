@@ -31,12 +31,51 @@ export const CLOSE_BTN: CSSProperties = {
 
 export const HOVER_BOX: CSSProperties = {
   position: 'fixed',
+  left: 0,
+  top: 0,
   pointerEvents: 'none',
-  border: '2px solid #f43f5e',
+  outline: '2px solid #f43f5e',
+  outlineOffset: 0,
   background: 'rgba(244, 63, 94, 0.08)',
+  boxSizing: 'border-box',
   zIndex: 2147483600,
   display: 'none',
-  transition: 'all 60ms ease-out',
+  willChange: 'transform, width, height',
+}
+
+export const SELECTED_BOX: CSSProperties = {
+  position: 'fixed',
+  left: 0,
+  top: 0,
+  pointerEvents: 'none',
+  outline: '2px dashed #f59e0b',
+  outlineOffset: 0,
+  background: 'rgba(245, 158, 11, 0.08)',
+  boxSizing: 'border-box',
+  zIndex: 2147483601,
+  willChange: 'transform, width, height',
+}
+
+export const ANCHOR_BADGE: CSSProperties = {
+  position: 'fixed',
+  left: 0,
+  top: 0,
+  minWidth: 20,
+  height: 20,
+  padding: '0 6px',
+  borderRadius: 999,
+  background: '#f43f5e',
+  color: 'white',
+  fontSize: 11,
+  fontWeight: 700,
+  lineHeight: '20px',
+  textAlign: 'center',
+  border: 'none',
+  cursor: 'pointer',
+  boxShadow: '0 2px 6px rgba(0,0,0,0.25)',
+  zIndex: 2147483602,
+  fontFamily: 'system-ui, sans-serif',
+  willChange: 'transform',
 }
 
 export const TOOLBAR: CSSProperties = {

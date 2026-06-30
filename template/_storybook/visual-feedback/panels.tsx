@@ -19,7 +19,7 @@ export function AnnotationList({
   return (
     <div data-vf-ui style={{ ...S.PANEL, width: 400 }}>
       <div style={S.PANEL_HEADER}>
-        <strong>📋 标注列表（{records.length}）</strong>
+        <strong>标注列表（{records.length}）</strong>
         <button type="button" onClick={onClose} style={S.CLOSE_BTN}>
           ✕
         </button>
@@ -27,7 +27,7 @@ export function AnnotationList({
 
       {records.length === 0 ? (
         <div style={{ color: '#94a3b8', fontSize: 12, padding: '8px 0' }}>
-          暂无标注。点「📌 标注反馈」开始。
+          暂无标注。点「标注反馈」开始。
         </div>
       ) : (
         <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 8 }}>
@@ -40,7 +40,7 @@ export function AnnotationList({
               <div style={S.RECORD_FEEDBACK}>{r.feedback}</div>
               <div style={S.RECORD_ACTIONS}>
                 <button type="button" onClick={() => onEdit(r)} style={S.EDIT_BTN}>
-                  ✏️ 编辑
+                  编辑
                 </button>
                 <button
                   type="button"
@@ -48,7 +48,7 @@ export function AnnotationList({
                   disabled={status === 'busy'}
                   style={S.deleteBtn(status === 'busy')}
                 >
-                  🗑 删除
+                  删除
                 </button>
               </div>
             </li>
@@ -85,7 +85,7 @@ export function AnnotationEditor({
   return (
     <div data-vf-ui style={{ ...S.PANEL, width: 380, marginBottom: 8 }}>
       <div style={{ ...S.PANEL_HEADER, marginBottom: 8 }}>
-        <strong>{isNew ? '📌 新标注' : '✏️ 编辑标注'}</strong>
+        <strong>{isNew ? '新标注' : '编辑标注'}</strong>
         <button type="button" onClick={onCancel} style={S.CLOSE_BTN}>
           ✕
         </button>
