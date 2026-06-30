@@ -35,13 +35,17 @@ export interface RequestOptions extends Omit<RequestInit, 'body'> {
 }
 
 function buildURL(path: string, query?: RequestOptions['query'], baseURL?: string): string {
-  const url = new URL(path, baseURL ?? (typeof window === 'undefined' ? 'http://localhost' : window.location.origin))
+  const base = baseURL ?? (typeof window === 'undefined' ? 'http://localhost' : window.location.origin)
+  const url = new URL(path, base)
   if (query) {
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined && value !== null) {
         url.searchParams.set(key, String(value))
       }
     }
+  }
+  if (baseURL) {
+    return url.toString()
   }
   return url.pathname + url.search
 }
