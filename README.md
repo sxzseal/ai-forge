@@ -7,7 +7,7 @@
               （可选：/dev-prd、/dev-review、/dev-test 独立调用）
 ```
 
-**一句话**：把开发流程的核心三阶段（原型 → 开发 → 部署）串成一条 Dev Loop，AI 编排执行，人类在关键节点确认。复杂场景按需手动调用 PRD / 审查 / 测试 三个独立增强 skill。
+**一句话**：把开发流程的核心三阶段（原型 → 开发 → 部署）串成一条 Dev Loop，AI 编排执行，人类在关键节点确认。复杂场景按需手动调用 PRD / 审查（含 seal 静态扫描）/ 测试 三个独立增强 skill。
 
 ---
 
@@ -160,22 +160,26 @@ npm run test         # 运行测试
 
 ```
 .loop/
-├── session.json              # 当前 loop 状态（阶段、进度、时间戳）
-├── prd.md                    # Phase 1: 结构化 PRD
-├── api-contracts.json        # Phase 1: 机器可读的 API 契约
+├── session.json              # 当前 loop 状态（currentPhase + last<Skill> 字段）
+├── prd.md                    # 独立 skill (dev-prd): 结构化 PRD
+├── api-contracts.json        # dev-prd / dev-proto 共同维护的 API 契约
+├── acceptance-checklist.md   # Phase 1 (dev-proto): 定稿后反推的验收清单
 ├── prototype/
-│   └── stories-manifest.md   # Phase 2: Story → 组件 → API 映射
+│   └── stories-manifest.md   # Phase 1 (dev-proto): Story → 组件 → API 映射
 ├── dev/
-│   ├── task-breakdown.md     # Phase 3: 任务拆解
-│   └── component-mapping.md  # Phase 3: 组件映射
-├── review/
-│   └── findings.md           # Phase 4: 审查发现（CRITICAL/HIGH/MEDIUM/LOW）
-├── test/
-│   ├── test-scenarios.md     # Phase 5: 测试意图（Given/When/Then）
-│   └── coverage-report.md    # Phase 5: 覆盖率报告
+│   ├── task-breakdown.md     # Phase 2 (dev-dev): 任务拆解
+│   └── component-mapping.md  # Phase 2 (dev-dev): 组件映射
 ├── deploy/
-│   ├── manifest.md           # Phase 6: 部署 URL + 健康检查
-│   └── history.md            # Phase 6: 部署历史
+│   ├── manifest.md           # Phase 3 (dev-deploy): 部署 URL + 健康检查
+│   └── history.md            # Phase 3 (dev-deploy): 部署历史
+├── review/                   # 独立 skill (dev-review)
+│   ├── seal-report.json      # L1: seal-code-review 静态扫描结果
+│   ├── seal.sarif            # L1: SARIF 格式（CI 用）
+│   ├── changed-files.txt     # 改动文件清单（扫描范围）
+│   └── findings.md           # L2: LLM 审查汇总（CRITICAL/HIGH/MEDIUM/LOW）
+├── test/                     # 独立 skill (dev-test)
+│   ├── test-scenarios.md     # 测试意图（Given/When/Then）
+│   └── coverage-report.md    # 覆盖率报告
 └── archive/                  # 已完成的 loop 归档
 ```
 
@@ -290,7 +294,11 @@ my-app/
 从自然语言需求直接生成 Storybook stories + MSW handlers，无需事先写 PRD：
 - 每个页面/组件一个 story，真实可交互
 - Mock 数据含边界情况（空态、超长文本、错误态）
-- **内置 visual-feedback 标注工具**：在 Storybook 里点元素 → 写反馈 → AI 读取迭代
+- **内置 visual-feedback 标注工具**（模块化结构）：在 Storybook 里点元素 → 写反馈 → AI 读取迭代
+  - `picker.ts` / `use-picker.ts` — 元素选取
+  - `overlay.tsx` / `panels.tsx` / `styles.ts` — UI 浮层
+  - `api.ts` / `server.cjs` — 客户端 API + 本地服务器
+  - `use-annotations.ts` / `types.ts` — 状态管理 + 类型
 - 定稿后反推「验收清单」（`.loop/acceptance-checklist.md`），作为开发输入
 - 生成 stories-manifest.md，记录 story → 组件 → API 映射
 - 同步推导 `.loop/api-contracts.json`（schema 与 `template/api-contracts.schema.json` 一致）
@@ -344,16 +352,23 @@ src/features/<domain>/
 - API 契约（同步写入 `.loop/api-contracts.json`，遵循统一 schema）
 - UI 规格、非功能需求、范围外说明
 
-#### 🔍 dev-review — 三路并行审查
+#### 🔍 dev-review — 双层审查（确定性扫描 + LLM 深度分析）
 
 ```
-并行派发:
-├── code-reviewer      → 代码质量、设计模式、性能
-├── security-reviewer  → 安全漏洞、注入、权限
-└── PRD 合规检查        → 验收标准覆盖率（AC-xxx → 实现映射）
+L1 静态扫描：seal-code-review (L3 模式)
+   ├── 幻觉包检测、硬编码密钥、危险 API（eval/exec）
+   ├── 死代码、空 catch、长函数、深嵌套
+   └── floating promise、as any、async 无 await
+        ↓ 报告写入 .loop/review/seal-report.json
+L2 LLM 并行审查（以 seal 报告为事实基线）：
+   ├── code-reviewer      → 代码质量、设计模式、性能
+   ├── security-reviewer  → 安全语义、注入、权限
+   └── PRD 合规检查        → 验收标准覆盖率（AC-xxx → 实现映射）
 ```
 
-结果汇总到 `.loop/review/findings.md`，写入 `session.json.lastReview`。
+**为什么先静态后 LLM**：seal 的发现是确定性的、零幻觉，LLM 不再浪费 token 重复发现机械问题，专注于业务逻辑和契约合规。结果汇总到 `.loop/review/findings.md`，写入 `session.json.lastReview`。
+
+> seal 仅自动修 `unused-import` 类 LOW 问题，其余交由人工。
 
 #### 🧪 dev-test — 业务测试三层桥梁
 
