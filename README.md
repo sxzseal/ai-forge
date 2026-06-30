@@ -3,10 +3,11 @@
 > AI 驱动的全流程开发框架 — 从一句话需求到生产部署，一条命令走完。
 
 ```
-需求 → [确认] → PRD → [确认] → 原型 → [确认] → 开发 → [确认] → 审查 → [确认] → 测试 → [确认] → 部署
+需求 → [确认] → 原型 → [确认] → 开发 → [确认] → 部署
+              （可选：/dev-prd、/dev-review、/dev-test 独立调用）
 ```
 
-**一句话**：把传统开发流程的每一步串联成一条 Dev Loop，AI 编排执行，人类在关键节点确认。
+**一句话**：把开发流程的核心三阶段（原型 → 开发 → 部署）串成一条 Dev Loop，AI 编排执行，人类在关键节点确认。复杂场景按需手动调用 PRD / 审查 / 测试 三个独立增强 skill。
 
 ---
 
@@ -65,54 +66,66 @@ npm run test         # 运行测试
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Dev Loop 全流程                                      │
+│                       Dev Loop 默认管线（3 阶段）                            │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  Phase 0   Phase 1   Phase 2    Phase 3    Phase 4    Phase 5   Phase 6   │
-│  澄清  →   PRD  →   原型  →    开发  →    审查  →    测试  →   部署      │
-│ (可选)    dev-prd  dev-proto   dev-dev  dev-review  dev-test  dev-deploy  │
-│           ↓         ↓          ↓         ↓          ↓         ↓          │
-│         prd.md   stories    features   findings  tests     manifest     │
-│                  + MSW      + commits  + 修复    + 覆盖率   + URLs      │
+│       Phase 1            Phase 2             Phase 3                        │
+│       原型  →             开发  →             部署                          │
+│       dev-proto          dev-dev             dev-deploy                     │
+│         ↓                  ↓                   ↓                            │
+│   stories + MSW       features + commits   Vercel + Railway                 │
 │                                                                             │
-│  ─────────────────────── .loop/session.json ────────────────────────────── │
-│                         (状态在阶段间传递)                                   │
+│  ─────────────────── .loop/session.json ─────────────────────────────────── │
+│                       (状态在阶段间传递)                                     │
 └─────────────────────────────────────────────────────────────────────────────┘
+
+可选独立 skill（不在默认管线中，按需手动调用）：
+
+  /dev-prd      → 生成结构化 PRD 文档
+  /dev-review   → 深度代码审查（code-reviewer + security + PRD 合规）
+  /dev-test     → 完整测试套件 + 覆盖率报告（含 P0 100% 检查）
 ```
 
 ### 各阶段详情
 
+**默认管线**
+
 | Phase | 名称 | Skill | 产出 | 人工确认 |
 |-------|------|-------|------|---------|
-| 0 | 澄清（可选）| — | 需求边界明确 | 复杂需求时自动触发 |
-| 1 | PRD | `dev-prd` | `.loop/prd.md` + `api-contracts.json` | ✅ 必须确认 |
-| 2 | 原型 | `dev-proto` | Storybook stories + MSW handlers | ✅ 交互验证 |
-| 3 | 开发 | `dev-dev` | 业务代码 + Git commits | ✅ 阶段性确认 |
-| 4 | 审查 | `dev-review` | `.loop/review/findings.md` | ✅ CRITICAL 必须修复 |
-| 5 | 测试 | `dev-test` | Vitest + Playwright 测试 | ✅ 测试意图确认（STOP POINT） |
-| 6 | 部署 | `dev-deploy` | Vercel + Railway 部署 | ✅ 生产环境必须确认 |
+| 1 | 原型 | `dev-proto` | Storybook stories + MSW handlers + 验收清单 | ✅ 标注迭代 + 定稿 |
+| 2 | 开发 | `dev-dev` | 业务代码 + Git commits + 验收覆盖报告 | ✅ 任务拆解 + 完成确认 |
+| 3 | 部署 | `dev-deploy` | Vercel + Railway 部署 + 健康检查 | ✅ 生产环境二次确认 |
+
+**独立增强 skill**
+
+| Skill | 用途 | 产出 |
+|-------|------|------|
+| `dev-prd` | 复杂需求需要结构化文档时 | `.loop/prd.md` + `.loop/api-contracts.json` |
+| `dev-review` | 代码深度审查 | `.loop/review/findings.md`，写入 `session.json.lastReview` |
+| `dev-test` | 完整测试生成 + 覆盖率 | `.loop/test/scenarios.md` + `coverage-report.md`，写入 `session.json.lastTest` |
 
 ### 使用方式
 
 ```bash
-# 全流程（从需求到部署）
+# 全流程（原型 → 开发 → 部署）
 /dev-loop 用户管理系统，支持 CRUD 和角色权限
 
 # 只做需求→原型（适合需求评审、方案验证）
 /dev-loop 用户管理系统 --to proto
 
 # 从指定阶段开始（前置阶段需已完成）
-/dev-loop --from review
+/dev-loop --from dev      # 跳过原型，需 .loop/acceptance-checklist.md 存在
 
 # 从上次中断处恢复
 /dev-loop --resume
 
-# 也可以独立调用单个 skill
-写 PRD          → 自动触发 dev-prd
-做原型          → 自动触发 dev-proto
-代码审查        → 自动触发 dev-review
-生成测试        → 自动触发 dev-test
-部署            → 自动触发 dev-deploy
+# 跳过原型标注迭代循环（一次生成即定稿）
+/dev-loop 后台管理系统 --skip-feedback
+
+# 独立增强 skill（不在默认管线，按需手动调用）
+/dev-prd 用户管理系统   # 生成结构化 PRD
+/dev-review            # 深度代码审查
+/dev-test              # 完整测试套件 + 覆盖率
 ```
 
 ---
@@ -176,7 +189,7 @@ npm run test         # 运行测试
 | 语言 | TypeScript | 5.7+ | 严格模式，类型安全 |
 | UI | shadcn/ui | Latest | Radix UI + Tailwind，高质量原子组件 |
 | 样式 | Tailwind CSS | 3.4+ | 实用优先，设计令牌 |
-| 原型 | Storybook | 8.4+ | 组件文档 + 交互原型 |
+| 原型 | Storybook (`nextjs-vite`) | 10+ | 组件文档 + 交互原型 |
 | Mock | MSW | 2.7+ | 网络层 API 模拟，浏览器原生 |
 | 单元测试 | Vitest | 2.1+ | 快速，兼容 Jest API |
 | E2E 测试 | Playwright | 1.49+ | 端到端用户流程 |
@@ -193,24 +206,27 @@ npm run test         # 运行测试
 ai-forge/
 ├── .claude/                    # Dev Loop 编排层
 │   ├── CLAUDE.md               # 项目上下文
-│   ├── skills/                 # 6 个阶段 skills
-│   │   ├── dev-prd/            # Phase 1: PRD 生成
-│   │   ├── dev-proto/          # Phase 2: 原型开发
-│   │   ├── dev-dev/            # Phase 3: 功能开发
-│   │   ├── dev-review/         # Phase 4: 代码审查
-│   │   ├── dev-test/           # Phase 5: 测试生成
-│   │   └── dev-deploy/         # Phase 6: 部署
+│   ├── skills/                 # 6 个 skill（3 个管线内 + 3 个独立增强）
+│   │   ├── dev-proto/          # Phase 1（默认管线）: 原型开发
+│   │   ├── dev-dev/            # Phase 2（默认管线）: 功能开发
+│   │   ├── dev-deploy/         # Phase 3（默认管线）: 部署
+│   │   ├── dev-prd/            # 独立: PRD 生成
+│   │   ├── dev-review/         # 独立: 代码审查
+│   │   └── dev-test/           # 独立: 测试生成
 │   └── commands/
-│       └── dev-loop.md         # 全流程编排命令
+│       └── dev-loop.md         # 默认管线编排命令
 │
 ├── template/                   # 项目模板（create.sh 复制此目录）
 │   ├── _claude/                # → .claude/（安装时重命名）
-│   ├── _storybook/             # → .storybook/（安装时重命名）
+│   ├── _storybook/             # → .storybook/（含 visual-feedback/）
+│   ├── api-contracts.schema.json # API 契约 JSON Schema（单一真源）
 │   ├── src/
 │   │   ├── app/                # Next.js App Router 入口
 │   │   ├── components/ui/      # shadcn 原子组件（L1，只读）
-│   │   ├── features/           # 业务功能模块（L3，开发区）
-│   │   └── lib/                # 工具函数
+│   │   ├── features/
+│   │   │   ├── _shared/        # L2 共享原语（state/ form/）
+│   │   │   └── <domain>/       # L3 业务功能模块
+│   │   └── lib/                # api-response.ts / request.ts / utils.ts
 │   ├── mocks/                  # MSW handlers + 测试数据
 │   └── tests/                  # unit / integration / e2e
 │
@@ -269,38 +285,33 @@ my-app/
 
 ## 关键特性
 
-### 📋 Phase 1：PRD 生成（dev-prd）
+### 🎨 Phase 1：交互原型（dev-proto）
 
-从自然语言需求生成结构化 PRD，包含：
-- 背景、目标、用户故事（AC-xxx 验收标准）
-- 功能需求（P0/P1/P2 优先级）
-- **API 契约**（机器可读 JSON，供下游阶段消费）
-- UI 规格、非功能需求、范围外说明
-
-### 🎨 Phase 2：交互原型（dev-proto）
-
-基于 PRD 自动生成 Storybook stories + MSW handlers：
+从自然语言需求直接生成 Storybook stories + MSW handlers，无需事先写 PRD：
 - 每个页面/组件一个 story，真实可交互
 - Mock 数据含边界情况（空态、超长文本、错误态）
+- **内置 visual-feedback 标注工具**：在 Storybook 里点元素 → 写反馈 → AI 读取迭代
+- 定稿后反推「验收清单」（`.loop/acceptance-checklist.md`），作为开发输入
 - 生成 stories-manifest.md，记录 story → 组件 → API 映射
+- 同步推导 `.loop/api-contracts.json`（schema 与 `template/api-contracts.schema.json` 一致）
 
-### ⚡ Phase 3：并行开发（dev-dev）
+### ⚡ Phase 2：并行开发（dev-dev）
 
 使用 **lobster-lead 模式**（内置的任务编排策略）：
 
 ```
 依赖分析 → 任务拆解 → 并行派发 subagent → 阶段性 commit
-[1] 数据层 ─→ [2] API 路由 ─→ 并行: [3a] 前端组件
-                             ─→ 并行: [3b] 页面集成
+[1] 基础设施 ─→ [2] API 路由 ─→ 并行: [3a] 前端 feature 模块
+                              ─→ 并行: [3b] 路由集成
 ```
 
-功能模块采用标准结构：
+功能模块采用标准结构（按需使用 TanStack Query 模式）：
 
 ```
 src/features/<domain>/
 ├── MANIFEST.md           # 功能边界 + 依赖说明
-├── queries.ts            # React Query 配置 + 类型定义
-├── mutations.ts          # useMutation hooks
+├── queries.ts            # 类型定义 + 查询（装了 TanStack Query 时为 queryOptions 工厂）
+├── mutations.ts          # useMutation hooks（仅装了 TanStack Query 时）
 ├── views/
 │   ├── list.view.tsx     # 列表页
 │   └── dialogs/
@@ -308,7 +319,32 @@ src/features/<domain>/
 └── components/           # 私有组件
 ```
 
-### 🔍 Phase 4：三路并行审查（dev-review）
+每个 checkpoint 前自动跑 `tsc --noEmit` + 4 项轻量自检（禁 `any`、禁裸 `useEffect+fetch`、mutation 必 invalidate、API 必走 `ok()/err()`），通过后自动 commit。
+
+### 🚀 Phase 3：多环境部署（dev-deploy）
+
+**Pre-flight 检查**（任一失败则阻止 production 部署）：
+- ✅ Git 状态干净（无未提交改动）
+- ✅ `npm run build` 通过
+- ✅ 验收覆盖检查（dev-dev 产出）
+- ✅ 若手动跑过 `/dev-review`：无 CRITICAL issue
+- ✅ 若手动跑过 `/dev-test`：P0 覆盖率 100%
+
+支持三个环境：`preview`（PR 预览）→ `staging`（预发）→ `production`（生产，需二次确认）
+
+---
+
+### 独立增强 skill
+
+#### 📋 dev-prd — 结构化 PRD 生成
+
+从自然语言需求生成结构化 PRD，包含：
+- 背景、目标、用户故事（AC-xxx 验收标准）
+- 功能需求（P0/P1/P2 优先级）
+- API 契约（同步写入 `.loop/api-contracts.json`，遵循统一 schema）
+- UI 规格、非功能需求、范围外说明
+
+#### 🔍 dev-review — 三路并行审查
 
 ```
 并行派发:
@@ -317,30 +353,19 @@ src/features/<domain>/
 └── PRD 合规检查        → 验收标准覆盖率（AC-xxx → 实现映射）
 ```
 
-结果汇总到 `findings.md`，**CRITICAL 问题阻止部署**。
+结果汇总到 `.loop/review/findings.md`，写入 `session.json.lastReview`。
 
-### 🧪 Phase 5：业务测试三层桥梁（dev-test）
+#### 🧪 dev-test — 业务测试三层桥梁
 
 解决 AI 弱于业务逻辑测试的痛点：
 
 ```
-Layer 1: PRD 验收标准 → Given/When/Then 测试意图（含 AI 置信度）
+Layer 1: 验收清单 / PRD AC → Given/When/Then 测试意图（含 AI 置信度）
 Layer 2: 🛑 STOP POINT → 人工确认业务逻辑是否正确（不可跳过）
 Layer 3: 确认通过 → 生成 Vitest / Playwright 测试代码
 ```
 
-P0 功能覆盖率要求 100%，P1/P2 建议 ≥ 80%。
-
-### 🚀 Phase 6：多环境部署（dev-deploy）
-
-**部署前自动检查**（任一失败则阻止部署）：
-- ✅ Git 状态干净（无未提交改动）
-- ✅ 测试报告存在且全部通过
-- ✅ 审查报告无 CRITICAL 问题
-- ✅ API 契约一致（PRD ↔ 代码）
-- ✅ P0 功能覆盖率 100%
-
-支持三个环境：`preview`（PR 预览）→ `staging`（预发）→ `production`（生产，需二次确认）
+P0 功能覆盖率要求 100%，P1/P2 建议 ≥ 80%。结果写入 `session.json.lastTest`。
 
 ---
 

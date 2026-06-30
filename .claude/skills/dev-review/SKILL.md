@@ -11,7 +11,7 @@ description: 开发完成后的综合代码审查，并行派发 code-reviewer +
 
 - 「代码审查」「审查代码」「review 一下」
 - 「dev-review」「代码检查」「检查代码」
-- 被 `/dev-loop` 作为 Phase 4 调用
+- 用户主动调用此 skill 做深度审查（**独立 skill**，不在 `/dev-loop` 默认管线中）
 
 **前置条件**：
 
@@ -210,7 +210,7 @@ PRD 歧义/缺陷：<n> 条（需用户确认是否修订 PRD）
 ```
 
 用 `AskUserQuestion` 询问：
-- **确认，继续**：审查通过，进入测试阶段
+- **确认完成**：审查结束，把结果带回主流程
 - **修复后重审**：修复完所有问题后再审查一次
 - **查看详情**：展示具体 findings
 
@@ -218,25 +218,25 @@ PRD 歧义/缺陷：<n> 条（需用户确认是否修订 PRD）
 
 ### Step 5：更新 session.json
 
+dev-review 是**独立 skill**，不接管 `/dev-loop` 的阶段流转。只在 `lastReview` 字段记录本次审查结果，**不覆写** `currentPhase`：
+
 ```json
 {
-  "currentPhase": "test",
-  "phases": {
-    "review": { "status": "completed", "completedAt": "<ISO timestamp>" }
-  },
-  "artifacts": {
-    "reviewFindings": ".loop/review/findings.md"
-  },
-  "prdRevisions": [
-    {
-      "issueId": "PRD-ISSUE-001",
-      "type": "歧义",
-      "description": "AC-002 中错误处理未指定具体格式",
-      "affectedAC": ["AC-002"],
-      "status": "pending_user_decision",
-      "detectedAt": "<ISO timestamp>"
-    }
-  ]
+  "lastReview": {
+    "completedAt": "<ISO timestamp>",
+    "findings": ".loop/review/findings.md",
+    "summary": { "critical": <n>, "high": <n>, "medium": <n>, "low": <n> },
+    "prdRevisions": [
+      {
+        "issueId": "PRD-ISSUE-001",
+        "type": "歧义",
+        "description": "AC-002 中错误处理未指定具体格式",
+        "affectedAC": ["AC-002"],
+        "status": "pending_user_decision",
+        "detectedAt": "<ISO timestamp>"
+      }
+    ]
+  }
 }
 ```
 
@@ -244,6 +244,8 @@ PRD 歧义/缺陷：<n> 条（需用户确认是否修订 PRD）
 > - `pending_user_decision`：已发现，等待用户决定是否修订
 > - `revised`：用户确认修订，PRD + api-contracts.json 已更新
 > - `accepted_as_is`：用户确认当前实现正确，PRD 无需修改
+>
+> **不要**写入 `currentPhase: "test"` 或类似字段 — `/dev-loop` 当前只编排 proto/dev/deploy 三个阶段，dev-review 是补充审查工具。
 
 ---
 
