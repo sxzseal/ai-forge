@@ -1,5 +1,4 @@
-import { VF_SERVER } from './types'
-import type { AnnotationRecord, PickedElement } from './types'
+import { VF_SERVER, type AnnotationRecord, type PickedElement } from './types'
 
 interface VfFetchOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE'

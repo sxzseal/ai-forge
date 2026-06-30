@@ -119,14 +119,15 @@ cat .loop/review/seal-report.json
 
 **自动修复**：
 
-如果 seal 报告中只有 `unused-import` 类 LOW 问题，可直接：
+如果 seal 报告中只有 `unused-import` 类 LOW 问题，通过 Skill 工具触发：
 
-```bash
-node /Users/mlamp/.claude/skills/seal-code-review/scripts/dist/bin/seal-review.js \
-  scan ./src --sla L1 --fix
+```
+Skill: seal-code-review
+Args: scan ./src --sla L1 --fix
 ```
 
 > 仅清理 unused import，其余问题不自动修。修复后 git diff 给用户看一眼。
+> 不要直接调用 seal-review.js 的绝对路径——seal-code-review skill 已在 user/global 层注册，统一通过 Skill 工具触发。
 
 ---
 

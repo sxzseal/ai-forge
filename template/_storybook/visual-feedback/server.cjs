@@ -18,6 +18,13 @@ const PORT = Number(process.env.VF_PORT) || 6007
 const ORIGIN = process.env.VF_ORIGIN || 'http://localhost:6006'
 const ANNOTATIONS_DIR = path.resolve(process.cwd(), '.loop/annotations')
 const MAX_BODY_BYTES = 1_000_000
+const MAX_LIST_ITEMS = 200
+const LOOPBACK_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
+
+function isLoopback(req) {
+  const addr = req.socket && req.socket.remoteAddress
+  return addr ? LOOPBACK_ADDRS.has(addr) : false
+}
 
 function ensureDir() {
   if (!fs.existsSync(ANNOTATIONS_DIR)) {
@@ -82,11 +89,13 @@ function readBody(req) {
 
 function listAnnotations() {
   ensureDir()
-  const files = fs
+  const allFiles = fs
     .readdirSync(ANNOTATIONS_DIR)
     .filter((f) => f.endsWith('.json'))
     .sort()
-  return files.map((file) => {
+  const truncated = allFiles.length > MAX_LIST_ITEMS
+  const files = truncated ? allFiles.slice(-MAX_LIST_ITEMS) : allFiles
+  const annotations = files.map((file) => {
     const full = path.join(ANNOTATIONS_DIR, file)
     const stat = fs.statSync(full)
     let body = null
@@ -98,6 +107,7 @@ function listAnnotations() {
     }
     return { file, size: stat.size, mtime: stat.mtime.toISOString(), ...body }
   })
+  return { annotations, total: allFiles.length, truncated, limit: MAX_LIST_ITEMS }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -118,7 +128,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && url.pathname === '/list') {
-      send(res, 200, { annotations: listAnnotations() })
+      send(res, 200, listAnnotations())
       return
     }
 
@@ -192,6 +202,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && url.pathname === '/clear') {
+      if (!isLoopback(req)) {
+        send(res, 403, { error: 'forbidden: loopback only' })
+        return
+      }
       ensureDir()
       const archived = path.resolve(ANNOTATIONS_DIR, `../annotations-archive/${Date.now()}`)
       fs.mkdirSync(archived, { recursive: true })

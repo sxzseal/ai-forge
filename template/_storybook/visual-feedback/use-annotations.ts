@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createAnnotation, deleteAnnotation, fetchAnnotations, updateAnnotation } from './api'
 import type { CreatePayload } from './api'
 import type { AnnotationRecord } from './types'
@@ -13,16 +13,21 @@ export interface UseAnnotationsResult {
 
 export function useAnnotations(): UseAnnotationsResult {
   const [records, setRecords] = useState<AnnotationRecord[]>([])
+  const warnedRef = useRef(false)
 
   const refresh = useCallback(async () => {
     try {
       const list = await fetchAnnotations()
       setRecords(list)
+      warnedRef.current = false
     } catch (err) {
-      console.warn(
-        '[visual-feedback] failed to fetch annotations — is the VF server running?',
-        err,
-      )
+      if (!warnedRef.current) {
+        warnedRef.current = true
+        console.warn(
+          '[visual-feedback] failed to fetch annotations — is the VF server running?',
+          err,
+        )
+      }
     }
   }, [])
 
