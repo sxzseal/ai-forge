@@ -15,6 +15,12 @@
       "Bash(git stash*)",
       "Bash(git tag*)",
       "Bash(git worktree*)"
+    ],
+    "deny": [
+      "Bash(node -e*)",
+      "Bash(node --eval*)",
+      "Bash(node -p*)",
+      "Bash(node --print*)"
     ]
   },
   "hooks": {
@@ -35,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "CMD=\"${CLAUDE_TOOL_INPUT_COMMAND:-}\"; if echo \"$CMD\" | grep -qE '\\bgit push\\b|\\bvercel .*--prod\\b|\\brailway up .*production\\b|\\bnpm publish\\b|\\brm -rf\\b|--no-verify'; then node scripts/lib/forge-mode.mjs gate --tool Bash --command \"$CMD\" 1>&2; RC=$?; if [ $RC -eq 3 ]; then echo 'forge-mode: DENIED by policy (mode=suggest or hard-deny rule)' 1>&2; exit 2; elif [ $RC -eq 2 ]; then exit 2; fi; fi"
+            "command": "CMD=\"${CLAUDE_TOOL_INPUT_COMMAND:-}\"; [ -z \"$CMD\" ] && exit 0; node scripts/lib/forge-mode.mjs gate --tool Bash --command \"$CMD\" 1>&2; RC=$?; if [ $RC -eq 3 ]; then printf '%s\\n' 'forge-mode: DENIED by policy (mode=suggest or hard-deny rule)' 1>&2; exit 2; elif [ $RC -eq 2 ]; then exit 2; fi; exit 0"
           }
         ]
       }

@@ -137,8 +137,17 @@ function validateBlock(block, repoRoot) {
 function applyBlock(block, validation) {
   if (validation.kind === 'create') {
     ensureDir(dirname(validation.abs));
-    writeFileSync(validation.abs, block.replace + (block.replace.endsWith('\n') ? '' : '\n'));
-    return;
+    const payload = block.replace + (block.replace.endsWith('\n') ? '' : '\n');
+    try {
+      writeFileSync(validation.abs, payload, { flag: 'wx' });
+      return;
+    } catch (e) {
+      if (e && e.code !== 'EEXIST') throw e;
+      // Lost the create race: someone materialised the file between
+      // validate() and apply(). Fall through to edit semantics — but only if
+      // the SEARCH is empty, we still refuse to blindly overwrite.
+      throw new Error(`create-race on ${block.file}: file appeared after validation; re-run patch validate/apply`);
+    }
   }
   const content = readFileSync(validation.abs, 'utf8');
   const next = content.slice(0, validation.matchIndex) + block.replace + content.slice(validation.matchIndex + block.search.length);

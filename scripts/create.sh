@@ -198,6 +198,8 @@ if [[ -f "$FORGE_DIR/.claude/settings.json" ]]; then
 
     const projectAllow = (project.permissions && project.permissions.allow) || [];
     const forgeAllow = (forge.permissions && forge.permissions.allow) || [];
+    const projectDeny = (project.permissions && project.permissions.deny) || [];
+    const forgeDeny = (forge.permissions && forge.permissions.deny) || [];
 
     // Union hooks per event kind + matcher, deduped by command signature so a
     // fresh install picks up all framework hooks and any pre-existing user hooks.
@@ -228,6 +230,9 @@ if [[ -f "$FORGE_DIR/.claude/settings.json" ]]; then
       permissions: {
         ...(project.permissions || {}),
         allow: Array.from(new Set([...projectAllow, ...forgeAllow])),
+        ...(projectDeny.length + forgeDeny.length > 0
+          ? { deny: Array.from(new Set([...projectDeny, ...forgeDeny])) }
+          : {}),
       },
       hooks: mergedHooks,
     };

@@ -168,6 +168,9 @@ if [[ -f "$FORGE_DIR/.claude/settings.json" ]]; then
     // Preserve user's allow list; union with forge's suggested allow list
     const projectAllow = (project.permissions && project.permissions.allow) || [];
     const forgeAllow = (forge.permissions && forge.permissions.allow) || [];
+    // Same for deny — union so hardened rules ship on upgrade
+    const projectDeny = (project.permissions && project.permissions.deny) || [];
+    const forgeDeny = (forge.permissions && forge.permissions.deny) || [];
 
     // Merge hooks per event kind (PostToolUse, PreToolUse, Stop, ...). For each
     // matcher, union project's own hooks with forge's, deduping by command string.
@@ -201,6 +204,9 @@ if [[ -f "$FORGE_DIR/.claude/settings.json" ]]; then
       permissions: {
         ...(project.permissions || {}),
         allow: Array.from(new Set([...projectAllow, ...forgeAllow])),
+        ...(projectDeny.length + forgeDeny.length > 0
+          ? { deny: Array.from(new Set([...projectDeny, ...forgeDeny])) }
+          : {}),
       },
       hooks: mergedHooks,
     };

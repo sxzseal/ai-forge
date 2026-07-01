@@ -83,7 +83,7 @@ function Overlay({ storyId, storyTitle }: OverlayProps) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [mode.kind])
+  }, [mode])
 
   const submitCreate = async () => {
     if (mode.kind !== 'new' || !feedback.trim()) return
