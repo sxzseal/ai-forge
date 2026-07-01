@@ -129,6 +129,9 @@ function cmdConsume(phase, flags) {
     b.checkpointRetries[cp] = (b.checkpointRetries[cp] || 0) + by;
   } else fail(`unknown kind: ${kind}`);
   writeBudget(phase, b);
+  // NOTE: cmdCheck calls process.exit(status.code). That means `consume`
+  // inherits the check's exit code (0/2/3) — callers should treat non-zero
+  // as "budget signal, action required", NOT as "consume failed".
   cmdCheck(phase);
 }
 

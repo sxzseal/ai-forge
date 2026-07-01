@@ -6,7 +6,6 @@
 //   forge-metrics rollup                           # aggregate all phases → .loop/loop-summary.json
 //   forge-metrics show --phase <p>                 # print without writing
 
-import { writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   parseArgs,
@@ -34,16 +33,47 @@ function readEvents() {
     .filter(Boolean);
 }
 
-function computePhaseMetrics(phase) {
-  const events = readEvents();
-  const phaseEvents = events.filter((e) => e.phase === phase);
+function computePhaseMetricsFromEvents(allEvents, phase) {
+  const phaseEvents = allEvents.filter((e) => e.phase === phase);
   if (phaseEvents.length === 0) return null;
 
-  const enter = phaseEvents.find((e) => e.kind === 'phase.enter');
-  const exit = phaseEvents.find((e) => e.kind === 'phase.exit');
-  const startedAt = enter ? enter.ts : phaseEvents[0].ts;
-  const completedAt = exit ? exit.ts : phaseEvents[phaseEvents.length - 1].ts;
-  const durationMs = new Date(completedAt).getTime() - new Date(startedAt).getTime();
+  // On resume a phase can have multiple enter/exit pairs. Use first-enter and
+  // last-exit for the reported window, and sum each (enter, matching-exit)
+  // for the "active" duration so resumed phases don't undercount work done
+  // after the second enter.
+  const enters = phaseEvents.filter((e) => e.kind === 'phase.enter');
+  const exits = phaseEvents.filter((e) => e.kind === 'phase.exit');
+  const startedAt = (enters[0] && enters[0].ts) || phaseEvents[0].ts || null;
+  const completedAt =
+    (exits[exits.length - 1] && exits[exits.length - 1].ts) ||
+    phaseEvents[phaseEvents.length - 1].ts ||
+    null;
+
+  let activeDurationMs = 0;
+  const timeline = phaseEvents.filter(
+    (e) => e.kind === 'phase.enter' || e.kind === 'phase.exit',
+  );
+  let openEnterTs = null;
+  for (const e of timeline) {
+    if (e.kind === 'phase.enter') {
+      if (openEnterTs === null) openEnterTs = e.ts;
+    } else if (e.kind === 'phase.exit' && openEnterTs !== null) {
+      activeDurationMs +=
+        new Date(e.ts).getTime() - new Date(openEnterTs).getTime();
+      openEnterTs = null;
+    }
+  }
+  if (openEnterTs !== null) {
+    const lastTs = phaseEvents[phaseEvents.length - 1].ts;
+    activeDurationMs +=
+      new Date(lastTs).getTime() - new Date(openEnterTs).getTime();
+  }
+
+  const startMs = startedAt ? new Date(startedAt).getTime() : NaN;
+  const endMs = completedAt ? new Date(completedAt).getTime() : NaN;
+  const wallDurationMs =
+    Number.isFinite(startMs) && Number.isFinite(endMs) ? endMs - startMs : null;
+  const durationMs = activeDurationMs > 0 ? activeDurationMs : wallDurationMs;
 
   const byKind = {};
   const selfCheckRetries = [];
@@ -72,7 +102,6 @@ function computePhaseMetrics(phase) {
   ).length;
   const subagentTotal = subagentSpawns.length;
 
-  // Steps: count step.enter events
   const stepsCount = phaseEvents.filter((e) => e.kind === 'step.enter').length;
 
   return {
@@ -93,6 +122,10 @@ function computePhaseMetrics(phase) {
     eventCount: phaseEvents.length,
     byKind,
   };
+}
+
+function computePhaseMetrics(phase) {
+  return computePhaseMetricsFromEvents(readEvents(), phase);
 }
 
 function cmdCompute(flags) {
@@ -118,6 +151,7 @@ function cmdShow(flags) {
 
 function cmdRollup() {
   const phases = ['prototype', 'dev', 'deploy'];
+  const events = readEvents(); // read once, reuse across all phases
   const perPhase = {};
   let totalDuration = 0;
   let totalSteps = 0;
@@ -127,7 +161,7 @@ function cmdRollup() {
   let totalAskUser = 0;
   let totalCheckpoints = 0;
   for (const p of phases) {
-    const m = computePhaseMetrics(p);
+    const m = computePhaseMetricsFromEvents(events, p);
     if (m) {
       perPhase[p] = m;
       totalDuration += m.durationMs || 0;

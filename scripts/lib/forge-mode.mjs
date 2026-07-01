@@ -129,11 +129,19 @@ function cmdGate(flags) {
     decision,
   };
   process.stdout.write(JSON.stringify(out, null, 2) + '\n');
+  // Exit code contract (consumed by the PreToolUse hook wrapper):
+  //   0 = allow, 2 = ask/block (Claude Code's hard-block signal), 3 = deny
+  // 3 is a distinct code so the hook wrapper can surface deny with a specific
+  // message instead of collapsing it into a generic "asking user" prompt.
   if (decision === 'deny') {
     emitEvent('tool.blocked', out);
-    process.exit(1);
+    process.stderr.write(`forge-mode: DENY ${tool} (${category}) under mode=${mode}\n`);
+    process.exit(3);
   }
-  if (decision === 'ask') process.exit(2);
+  if (decision === 'ask') {
+    process.stderr.write(`forge-mode: ASK ${tool} (${category}) under mode=${mode}\n`);
+    process.exit(2);
+  }
   process.exit(0);
 }
 

@@ -10,8 +10,8 @@
 //
 // Default output: .loop/dev/repo-map.txt
 
-import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from 'node:fs';
-import { join, resolve, relative, dirname } from 'node:path';
+import { readFileSync, readdirSync, lstatSync, realpathSync, writeFileSync, existsSync } from 'node:fs';
+import { join, relative, dirname } from 'node:path';
 import { parseArgs, die, findRepoRoot, findLoopDir, ensureDir } from './_common.mjs';
 
 const PREFIX = 'forge-repomap';
@@ -48,7 +48,16 @@ const DIR_PRIORITY = [
   { pattern: /^lib\//, weight: 70 },
 ];
 
-function walkDir(dir, out, exts) {
+function walkDir(dir, out, exts, visited = new Set()) {
+  let realDir;
+  try {
+    realDir = realpathSync(dir);
+  } catch {
+    return;
+  }
+  if (visited.has(realDir)) return;
+  visited.add(realDir);
+
   let entries;
   try {
     entries = readdirSync(dir);
@@ -56,17 +65,21 @@ function walkDir(dir, out, exts) {
     return;
   }
   for (const name of entries) {
-    if (name.startsWith('.') && name !== '.storybook') continue; // dotfiles
+    // Skip dotfiles/dotdirs. .storybook is intentionally kept out of the map;
+    // it is also listed in DEFAULT_EXCLUDE_DIRS so a stray un-dotted variant
+    // would still be filtered on the next line.
+    if (name.startsWith('.')) continue;
     if (DEFAULT_EXCLUDE_DIRS.has(name)) continue;
     const full = join(dir, name);
-    let stat;
+    let lstat;
     try {
-      stat = statSync(full);
+      lstat = lstatSync(full);
     } catch {
       continue;
     }
-    if (stat.isDirectory()) walkDir(full, out, exts);
-    else if (stat.isFile()) {
+    if (lstat.isSymbolicLink()) continue; // skip symlinks to avoid loops
+    if (lstat.isDirectory()) walkDir(full, out, exts, visited);
+    else if (lstat.isFile()) {
       const dot = name.lastIndexOf('.');
       const ext = dot >= 0 ? name.slice(dot) : '';
       if (exts.includes(ext)) out.push(full);
@@ -84,6 +97,11 @@ function priorityOf(relPath) {
 // Regex-extract top-level exports. Not AST-accurate but good enough for context injection.
 const EXPORT_RE = /^export\s+(?:default\s+)?(?:async\s+)?(function|class|interface|type|const|let|enum)\s+(\w+)[^\n{=]*/gm;
 const RE_EXPORT_RE = /^export\s*\{[^}]*\}(?:\s*from\s*['"][^'"]+['"])?/gm;
+// Catch `export default` forms that EXPORT_RE misses — anonymous function/class,
+// arrow expressions, object/array literals, plain identifiers.
+// The negative lookahead avoids double-counting the named forms already matched above.
+const EXPORT_DEFAULT_ANON_RE =
+  /^export\s+default\s+(?!(?:async\s+)?(?:function|class|interface|type|const|let|enum)\s+\w+)(.+)$/gm;
 
 function extractSymbols(content) {
   const out = [];
@@ -95,6 +113,10 @@ function extractSymbols(content) {
   }
   // Re-exports
   while ((m = RE_EXPORT_RE.exec(content)) !== null) {
+    out.push(m[0].trim().replace(/\s+/g, ' ').slice(0, 120));
+  }
+  // Anonymous default exports (React components, arrow fns, plain expressions)
+  while ((m = EXPORT_DEFAULT_ANON_RE.exec(content)) !== null) {
     out.push(m[0].trim().replace(/\s+/g, ' ').slice(0, 120));
   }
   return out;
@@ -114,7 +136,10 @@ function cmdBuild(flags) {
   const files = [];
   walkDir(repoRoot, files, ['.ts', '.tsx']);
 
-  // Filter with simple glob-lite (contains match) if provided
+  // NOTE: substring match, not real glob. `*` is stripped then a plain
+  // `String.includes` is used — good for `--include tsx` or `--include features/`,
+  // but `--include "src/**/foo"` collapses to substring `src/foo` and won't
+  // match nested paths. Swap in `picomatch` if real glob semantics are needed.
   const include = flags.include;
   const exclude = flags.exclude;
   const rel = files
@@ -150,14 +175,22 @@ function cmdBuild(flags) {
   tokenBudget -= approxTokens(header);
 
   let filesIncluded = 0;
+  let filesSkipped = 0;
+  // Small floor so we don't spend the last handful of tokens on nothing useful.
+  const MIN_BUDGET_STOP = 32;
   for (const e of scored) {
+    if (tokenBudget < MIN_BUDGET_STOP) break;
     const block = [
       `=== ${e.file} (${e.lines} lines, priority ${e.priority})`,
       ...e.symbols.map((s) => `  ${s}`),
       '',
     ].join('\n');
     const cost = approxTokens(block);
-    if (cost > tokenBudget) break;
+    if (cost > tokenBudget) {
+      // Oversized file — keep scanning; a smaller lower-priority file may still fit.
+      filesSkipped++;
+      continue;
+    }
     chunks.push(block);
     tokenBudget -= cost;
     filesIncluded++;
@@ -172,6 +205,7 @@ function cmdBuild(flags) {
         outPath,
         scannedFiles: rel.length,
         includedFiles: filesIncluded,
+        skippedOversized: filesSkipped,
         approxTokens: maxTokens - tokenBudget,
         maxTokens,
       },

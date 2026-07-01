@@ -8,42 +8,25 @@
 //   enhancers manifest --phase <p> --selected <names> --skipped <names>
 //                                                 # write .loop/<phase>/enhancers-manifest.md
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
-import { join, dirname, basename, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { argv, exit, cwd } from 'node:process';
+import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { join, basename, resolve } from 'node:path';
+import { cwd } from 'node:process';
+import {
+  parseArgs,
+  die,
+  HERE,
+  findAncestor,
+  ensureDir,
+} from './_common.mjs';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-
-function die(msg, code = 1) { process.stderr.write(`enhancers: ${msg}\n`); exit(code); }
-
-function parseArgs(args) {
-  const out = { _: [], flags: {} };
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a.startsWith('--')) {
-      const key = a.slice(2);
-      const next = args[i + 1];
-      if (next && !next.startsWith('--')) { out.flags[key] = next; i++; }
-      else { out.flags[key] = true; }
-    } else { out._.push(a); }
-  }
-  return out;
-}
+const PREFIX = 'enhancers';
+const fail = (m, c = 1) => die(PREFIX, m, c);
 
 function findEnhancersDir() {
-  if (process.env.FORGE_ENHANCERS_DIR && existsSync(process.env.FORGE_ENHANCERS_DIR)) {
-    return process.env.FORGE_ENHANCERS_DIR;
-  }
-  let dir = cwd();
-  for (let i = 0; i < 8; i++) {
-    const candidate = join(dir, '.claude', 'enhancers');
-    if (existsSync(candidate)) return candidate;
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return resolve(HERE, '..', '..', '.claude', 'enhancers');
+  return (
+    findAncestor(join('.claude', 'enhancers'), { fromEnv: 'FORGE_ENHANCERS_DIR' }) ||
+    resolve(HERE, '..', '..', '.claude', 'enhancers')
+  );
 }
 
 function parseFrontmatter(content) {
@@ -114,30 +97,60 @@ function listEnhancers(phase) {
     });
 }
 
+// Tokenize on hyphen / underscore / whitespace so "shadcn-form-patterns"
+// splits into ["shadcn", "form", "patterns"]. Matching is now case-insensitive
+// exact-token equality — no more substring collisions like keyword "form"
+// hitting appliesTo "formatting" or "api" hitting "rapid".
+function tokenize(s) {
+  return String(s || '')
+    .toLowerCase()
+    .split(/[-_\s]+/)
+    .filter(Boolean);
+}
+
+function matchesKeywords(appliesTo, keywords) {
+  if (appliesTo.length === 0) return true; // default-on
+  if (keywords.length === 0) return true; // no keywords → keep everything (caller intent)
+  const kwTokens = new Set(keywords.flatMap(tokenize));
+  for (const item of appliesTo) {
+    // Also allow the whole tag to match (e.g. keyword "shadcn-form" against tag "shadcn-form")
+    const asWhole = String(item).toLowerCase();
+    if (kwTokens.has(asWhole)) return true;
+    for (const t of tokenize(item)) {
+      if (kwTokens.has(t)) return true;
+    }
+  }
+  return false;
+}
+
 function cmdList(phase) {
-  if (!phase) die('phase required (proto | dev | deploy)');
+  if (!phase) fail('phase required (proto | dev | deploy)');
   const items = listEnhancers(phase);
   process.stdout.write(JSON.stringify(items, null, 2) + '\n');
 }
 
 function cmdSelect(phase, keywordsCsv) {
-  if (!phase) die('phase required');
-  const keywords = (keywordsCsv || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  if (!phase) fail('phase required');
+  const keywords = (keywordsCsv || '').split(',').map(s => s.trim()).filter(Boolean);
   const items = listEnhancers(phase);
   const selected = [];
   const skipped = [];
   for (const it of items) {
-    if (it.appliesTo.length === 0) { selected.push({ ...it, reason: 'no appliesTo (default-on)' }); continue; }
-    const at = it.appliesTo.map(s => s.toLowerCase());
-    const hit = keywords.some(k => at.some(a => a === k || a.includes(k) || k.includes(a)));
-    if (hit || keywords.length === 0) selected.push({ ...it, reason: keywords.length === 0 ? 'no keywords given' : 'matched keywords' });
-    else skipped.push({ ...it, reason: `no keyword match (needs: ${it.appliesTo.join(', ')})` });
+    if (it.appliesTo.length === 0) {
+      selected.push({ ...it, reason: 'no appliesTo (default-on)' });
+      continue;
+    }
+    if (matchesKeywords(it.appliesTo, keywords)) {
+      selected.push({ ...it, reason: keywords.length === 0 ? 'no keywords given' : 'matched keywords' });
+    } else {
+      skipped.push({ ...it, reason: `no keyword match (needs: ${it.appliesTo.join(', ')})` });
+    }
   }
   process.stdout.write(JSON.stringify({ selected, skipped }, null, 2) + '\n');
 }
 
 function cmdManifest(phase, selectedCsv, skippedCsv, loopDir) {
-  if (!phase) die('--phase required');
+  if (!phase) fail('--phase required');
   const selected = (selectedCsv || '').split(',').map(s => s.trim()).filter(Boolean);
   const skipped = (skippedCsv || '').split(',').map(s => s.trim()).filter(Boolean);
   const all = listEnhancers(phase);
@@ -166,24 +179,24 @@ function cmdManifest(phase, selectedCsv, skippedCsv, loopDir) {
     lines.push(`- ${name} — appliesTo: ${it.appliesTo.join(', ') || '(none)'}`);
   }
   const baseDir = loopDir || join(cwd(), '.loop', phase === 'proto' ? 'prototype' : phase);
-  if (!existsSync(baseDir)) mkdirSync(baseDir, { recursive: true });
+  ensureDir(baseDir);
   const outPath = join(baseDir, 'enhancers-manifest.md');
   writeFileSync(outPath, lines.join('\n') + '\n');
-  process.stderr.write(`enhancers: wrote ${outPath}\n`);
+  process.stderr.write(`${PREFIX}: wrote ${outPath}\n`);
 }
 
 function main() {
-  const args = parseArgs(argv.slice(2));
+  const args = parseArgs(process.argv.slice(2));
   const [cmd, phase] = args._;
   if (!cmd) {
     process.stderr.write('usage: enhancers <list|select|manifest> <phase> [flags]\n');
-    exit(1);
+    process.exit(1);
   }
   switch (cmd) {
     case 'list': return cmdList(phase);
     case 'select': return cmdSelect(phase, args.flags.keywords || '');
     case 'manifest': return cmdManifest(args.flags.phase, args.flags.selected || '', args.flags.skipped || '', args.flags['loop-dir']);
-    default: die(`unknown command: ${cmd}`);
+    default: fail(`unknown command: ${cmd}`);
   }
 }
 

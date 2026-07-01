@@ -190,21 +190,48 @@ if [[ -f "$FORGE_DIR/.claude/settings.json" ]]; then
   info "Merging framework hooks into .claude/settings.json..."
   node - "$PROJECT_DIR/.claude/settings.json" "$FORGE_DIR/.claude/settings.json" <<'JS'
     const fs = require('fs');
+    const path = require('path');
     const [projectPath, forgePath] = process.argv.slice(2);
     const forge = JSON.parse(fs.readFileSync(forgePath, 'utf8'));
     let project = {};
     try { project = JSON.parse(fs.readFileSync(projectPath, 'utf8')); } catch {}
+
+    const projectAllow = (project.permissions && project.permissions.allow) || [];
+    const forgeAllow = (forge.permissions && forge.permissions.allow) || [];
+
+    // Union hooks per event kind + matcher, deduped by command signature so a
+    // fresh install picks up all framework hooks and any pre-existing user hooks.
+    const projectHooks = project.hooks || {};
+    const forgeHooks = forge.hooks || {};
+    const hookKinds = new Set([...Object.keys(projectHooks), ...Object.keys(forgeHooks)]);
+    const mergedHooks = {};
+    for (const kind of hookKinds) {
+      const projectEntries = Array.isArray(projectHooks[kind]) ? projectHooks[kind] : [];
+      const forgeEntries = Array.isArray(forgeHooks[kind]) ? forgeHooks[kind] : [];
+      const byMatcher = new Map();
+      for (const e of projectEntries) byMatcher.set(e.matcher || '', { matcher: e.matcher, hooks: [...(e.hooks || [])] });
+      for (const e of forgeEntries) {
+        const key = e.matcher || '';
+        const slot = byMatcher.get(key) || { matcher: e.matcher, hooks: [] };
+        const seen = new Set(slot.hooks.map((h) => `${h.type}::${h.command}`));
+        for (const h of (e.hooks || [])) {
+          const sig = `${h.type}::${h.command}`;
+          if (!seen.has(sig)) { slot.hooks.push(h); seen.add(sig); }
+        }
+        byMatcher.set(key, slot);
+      }
+      mergedHooks[kind] = [...byMatcher.values()];
+    }
+
     const merged = {
       ...project,
       permissions: {
         ...(project.permissions || {}),
-        allow: Array.from(new Set([
-          ...((project.permissions && project.permissions.allow) || []),
-          ...((forge.permissions && forge.permissions.allow) || []),
-        ])),
+        allow: Array.from(new Set([...projectAllow, ...forgeAllow])),
       },
-      hooks: forge.hooks || project.hooks || {},
+      hooks: mergedHooks,
     };
+    fs.mkdirSync(path.dirname(projectPath), { recursive: true });
     fs.writeFileSync(projectPath, JSON.stringify(merged, null, 2) + '\n');
 JS
   ok "settings.json hooks merged"

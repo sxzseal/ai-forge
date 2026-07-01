@@ -1,9 +1,6 @@
 // ai-forge shared utilities — no npm deps beyond what forge-state installs (ajv).
-// Kept intentionally small: only helpers reused across 2+ CLIs live here.
-//
-// forge-state.mjs still has its own inlined copies of some of these helpers to
-// avoid a risky refactor; new CLIs (events, budget, patch, metrics, mode, ...)
-// import from this module.
+// Every forge-* CLI imports its primitives from here (parseArgs, locking,
+// atomic write, ajv loading, schema validation, ISO timestamps, loop-id lookup).
 
 import {
   readFileSync,
@@ -18,7 +15,7 @@ import {
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { argv, exit, stdin, cwd } from 'node:process';
+import { exit, stdin, cwd } from 'node:process';
 
 export const LOCK_STALE_MS = 30_000;
 export const HERE = dirname(fileURLToPath(import.meta.url));

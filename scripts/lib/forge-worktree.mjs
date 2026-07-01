@@ -4,11 +4,12 @@
 // Usage:
 //   forge-worktree create --subagent <id> [--from <ref>]
 //   forge-worktree list
-//   forge-worktree merge --subagent <id> [--squash] [--message <msg>]
+//   forge-worktree merge --subagent <id> [--no-squash] [--message <msg>]
 //   forge-worktree drop --subagent <id> [--force]
 //   forge-worktree path --subagent <id>              # print worktree path
 //
 // worktrees live under .loop/.worktrees/<id>/ on branch `forge/<loop-id>/sa-<id>`.
+// merge is always executed in the MAIN worktree, regardless of the caller's cwd.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -19,12 +20,29 @@ const PREFIX = 'forge-worktree';
 const fail = (m, c = 1) => die(PREFIX, m, c);
 
 function git(args, opts = {}) {
-  const repoRoot = findRepoRoot();
+  const repoRoot = opts.cwd || findRepoRoot();
   const r = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8', ...opts });
   if (r.status !== 0 && !opts.allowFail) {
     fail(`git ${args.join(' ')} failed: ${r.stderr || r.stdout}`);
   }
   return r;
+}
+
+// Resolve the MAIN worktree path by parsing `git worktree list --porcelain`.
+// The main worktree is always the first entry in the output. Falls back to
+// findRepoRoot() if parsing yields nothing (e.g. on a bare/no-git checkout).
+function findMainWorktree() {
+  const r = spawnSync('git', ['worktree', 'list', '--porcelain'], {
+    cwd: findRepoRoot(),
+    encoding: 'utf8',
+  });
+  if (r.status !== 0) return findRepoRoot();
+  for (const line of r.stdout.split('\n')) {
+    if (line.startsWith('worktree ')) {
+      return line.slice('worktree '.length).trim();
+    }
+  }
+  return findRepoRoot();
 }
 
 function branchName(subagent) {
@@ -56,18 +74,13 @@ function cmdCreate(flags) {
   const br = branchName(id);
   const from = flags.from || 'HEAD';
   ensureDir(join(findLoopDir(), '.worktrees'));
-  git(['worktree', 'add', '-b', br, wt, from]);
-  emitEvent('tool.result', {
-    tool: 'forge-worktree.create',
-    subagent: id,
-    path: wt,
-    branch: br,
-  });
+  git(['worktree', 'add', '-b', br, wt, from], { cwd: findMainWorktree() });
+  emitEvent('worktree.created', { subagent: id, path: wt, branch: br });
   process.stdout.write(JSON.stringify({ subagent: id, path: wt, branch: br }, null, 2) + '\n');
 }
 
 function cmdList() {
-  const r = git(['worktree', 'list', '--porcelain']);
+  const r = git(['worktree', 'list', '--porcelain'], { cwd: findMainWorktree() });
   process.stdout.write(r.stdout);
 }
 
@@ -83,23 +96,28 @@ function cmdMerge(flags) {
   const wt = worktreePath(id);
   if (!existsSync(wt)) fail(`worktree not found: ${wt}`);
   const br = branchName(id);
-  // Prefer squash merge to keep history clean; fall back to merge commit
-  const squash = !!flags.squash || flags.squash === undefined;
+  // Merge must happen in the MAIN worktree — if the caller ran from inside a
+  // subagent worktree, findRepoRoot() would resolve there and the merge would
+  // no-op on the subagent's own branch. Always resolve main explicitly.
+  const mainWt = findMainWorktree();
+  // Default: squash (history hygiene). --no-squash preserves the branch history
+  // via a --no-ff merge commit. Explicit --squash also works (idempotent).
+  const squash = flags['no-squash'] ? false : true;
   const msg = flags.message || `feat: merge subagent ${id} work`;
 
   if (squash) {
-    git(['merge', '--squash', br]);
+    git(['merge', '--squash', br], { cwd: mainWt });
     // Squash leaves changes staged but uncommitted — commit them
-    const commit = git(['commit', '-m', msg], { allowFail: true });
+    const commit = git(['commit', '-m', msg], { cwd: mainWt, allowFail: true });
     if (commit.status !== 0) {
       // Nothing to commit (empty subagent work) — that's fine
       process.stderr.write(`${PREFIX}: nothing to commit for ${id}\n`);
     }
   } else {
-    git(['merge', '--no-ff', '-m', msg, br]);
+    git(['merge', '--no-ff', '-m', msg, br], { cwd: mainWt });
   }
-  emitEvent('tool.result', { tool: 'forge-worktree.merge', subagent: id, squash });
-  process.stdout.write(JSON.stringify({ subagent: id, merged: true, branch: br }, null, 2) + '\n');
+  emitEvent('worktree.merged', { subagent: id, squash, branch: br });
+  process.stdout.write(JSON.stringify({ subagent: id, merged: true, branch: br, squash }, null, 2) + '\n');
 }
 
 function cmdDrop(flags) {
@@ -107,14 +125,15 @@ function cmdDrop(flags) {
   if (!id) fail('--subagent <id> required');
   const wt = worktreePath(id);
   const br = branchName(id);
+  const mainWt = findMainWorktree();
   if (existsSync(wt)) {
     const args = ['worktree', 'remove'];
     if (flags.force) args.push('--force');
     args.push(wt);
-    git(args, { allowFail: true });
+    git(args, { cwd: mainWt, allowFail: true });
   }
-  git(['branch', '-D', br], { allowFail: true });
-  emitEvent('tool.result', { tool: 'forge-worktree.drop', subagent: id });
+  git(['branch', '-D', br], { cwd: mainWt, allowFail: true });
+  emitEvent('worktree.dropped', { subagent: id, branch: br });
   process.stdout.write(JSON.stringify({ subagent: id, dropped: true }, null, 2) + '\n');
 }
 

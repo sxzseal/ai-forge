@@ -94,12 +94,24 @@ if [[ "$FORCE" -ne 1 ]]; then
   fi
 fi
 
-# Auto-stash as safety net
+# Auto-stash as safety net. Only set STASH_REF if the push actually stashed
+# something — a failed / no-op stash must not tell the user to `git stash pop`.
 STASH_REF=""
 if (cd "$PROJECT_DIR" && git status --porcelain 2>/dev/null | grep -q .); then
   info "Untracked / modified files detected — stashing as safety net..."
-  STASH_OUTPUT="$(cd "$PROJECT_DIR" && git stash push -u -m "ai-forge-upgrade-$(date +%Y%m%d-%H%M%S)" 2>&1)" || true
-  STASH_REF="ai-forge-upgrade"
+  STASH_MSG="ai-forge-upgrade-$(date +%Y%m%d-%H%M%S)"
+  if (cd "$PROJECT_DIR" && git stash push -u -m "$STASH_MSG" >/dev/null 2>&1); then
+    # `git stash push` prints "No local changes to save" AND exits 0 when nothing
+    # was actually stashed, so verify the stash landed on top of the ref stack.
+    if (cd "$PROJECT_DIR" && git stash list 2>/dev/null | head -1 | grep -q "$STASH_MSG"); then
+      STASH_REF="$STASH_MSG"
+      ok "Stashed as $STASH_MSG"
+    else
+      warn "git stash push exited 0 but no stash was created (nothing to stash)"
+    fi
+  else
+    warn "git stash push failed — proceeding without stash safety net"
+  fi
 fi
 
 # ── Sync .claude/skills ────────────────────────────────────────
@@ -140,30 +152,62 @@ cp -R "$FORGE_DIR/.claude/roles" "$PROJECT_DIR/.claude/"
 ok "roles synced"
 
 # ── Merge .claude/settings.json (hooks) ────────────────────────
-# Existing user permissions are preserved; framework hooks are set (and overwrite any prior forge hooks).
+# User permissions.allow and user-authored hooks are preserved; framework hooks are
+# unioned in. Duplicate framework hooks (identified by matcher + command signature)
+# are refreshed rather than duplicated.
 if [[ -f "$FORGE_DIR/.claude/settings.json" ]]; then
-  info "Merging .claude/settings.json (preserving user permissions.allow, replacing hooks)..."
+  info "Merging .claude/settings.json (preserving user permissions.allow and user hooks)..."
   node - "$PROJECT_DIR/.claude/settings.json" "$FORGE_DIR/.claude/settings.json" <<'JS'
     const fs = require('fs');
+    const path = require('path');
     const [projectPath, forgePath] = process.argv.slice(2);
     const forge = JSON.parse(fs.readFileSync(forgePath, 'utf8'));
     let project = {};
     try { project = JSON.parse(fs.readFileSync(projectPath, 'utf8')); } catch { /* first run */ }
+
     // Preserve user's allow list; union with forge's suggested allow list
     const projectAllow = (project.permissions && project.permissions.allow) || [];
     const forgeAllow = (forge.permissions && forge.permissions.allow) || [];
+
+    // Merge hooks per event kind (PostToolUse, PreToolUse, Stop, ...). For each
+    // matcher, union project's own hooks with forge's, deduping by command string.
+    // This means a user's prettier PostToolUse survives an upgrade, while the
+    // framework's forge-* hooks are (re-)installed alongside.
+    const projectHooks = project.hooks || {};
+    const forgeHooks = forge.hooks || {};
+    const hookKinds = new Set([...Object.keys(projectHooks), ...Object.keys(forgeHooks)]);
+    const mergedHooks = {};
+    for (const kind of hookKinds) {
+      const projectEntries = Array.isArray(projectHooks[kind]) ? projectHooks[kind] : [];
+      const forgeEntries = Array.isArray(forgeHooks[kind]) ? forgeHooks[kind] : [];
+      // Index project entries by matcher for merge; forge entries always refresh.
+      const byMatcher = new Map();
+      for (const e of projectEntries) byMatcher.set(e.matcher || '', { matcher: e.matcher, hooks: [...(e.hooks || [])] });
+      for (const e of forgeEntries) {
+        const key = e.matcher || '';
+        const slot = byMatcher.get(key) || { matcher: e.matcher, hooks: [] };
+        const seen = new Set(slot.hooks.map((h) => `${h.type}::${h.command}`));
+        for (const h of (e.hooks || [])) {
+          const sig = `${h.type}::${h.command}`;
+          if (!seen.has(sig)) { slot.hooks.push(h); seen.add(sig); }
+        }
+        byMatcher.set(key, slot);
+      }
+      mergedHooks[kind] = [...byMatcher.values()];
+    }
+
     const merged = {
       ...project,
       permissions: {
         ...(project.permissions || {}),
         allow: Array.from(new Set([...projectAllow, ...forgeAllow])),
       },
-      hooks: forge.hooks || project.hooks || {},
+      hooks: mergedHooks,
     };
-    fs.mkdirSync(require('path').dirname(projectPath), { recursive: true });
+    fs.mkdirSync(path.dirname(projectPath), { recursive: true });
     fs.writeFileSync(projectPath, JSON.stringify(merged, null, 2) + '\n');
 JS
-  ok "settings.json merged"
+  ok "settings.json merged (user hooks preserved)"
 fi
 
 # ── Sync tests/smoke/ (only if missing) ────────────────────────
@@ -229,6 +273,7 @@ echo "  ────────────────────────
 echo ""
 echo "  Review changes: cd $PROJECT_DIR && git diff"
 if [[ -n "$STASH_REF" ]]; then
-  echo "  Pre-upgrade work was stashed; restore with: git stash pop"
+  echo "  Pre-upgrade work was stashed as '$STASH_REF'."
+  echo "  Restore with: cd $PROJECT_DIR && git stash list | grep '$STASH_REF' # then: git stash apply <ref>"
 fi
 echo ""

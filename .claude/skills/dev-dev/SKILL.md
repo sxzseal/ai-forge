@@ -628,10 +628,10 @@ node scripts/lib/forge-events.mjs append --kind subagent.return --phase dev --st
 6. checkpoint commit + 打 git tag（`/dev-undo` 依赖）：
 
    ```bash
-   # 生成 checkpoint 编号（自增）
-   CP_N=$(git tag --list 'loop-*-cp-*' | wc -l | tr -d ' ')
-   CP_N=$((CP_N + 1))
+   # 生成 checkpoint 编号（scoped 到当前 loop id，避免跨 loop 全局累加）
    LOOP_ID=$(node scripts/lib/forge-state.mjs read .loop/session.json | jq -r .loopId)
+   CP_N=$(git tag --list "${LOOP_ID}-cp-*" | wc -l | tr -d ' ')
+   CP_N=$((CP_N + 1))
    TAG="${LOOP_ID}-cp-${CP_N}"
 
    # 调用 /smart-commit 生成 commit

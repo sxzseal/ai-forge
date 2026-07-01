@@ -21,8 +21,8 @@
 //   forge-patch reject <patch-file>            # move to .loop/dev/rejected-patches/
 //   forge-patch parse <patch-file>             # print parsed blocks as JSON
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
-import { join, dirname, resolve, relative } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
 import { parseArgs, die, findRepoRoot, findLoopDir, ensureDir, nowIso, appendLine, readLoopId } from './_common.mjs';
 
 const PREFIX = 'forge-patch';

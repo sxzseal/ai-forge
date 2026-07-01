@@ -64,9 +64,10 @@ cat .loop/dev/acceptance-coverage.md 2>/dev/null
 **可选检查**（用户手动跑了独立 review/test 时才生效）：
 
 ```bash
-# session.json.lastReview / lastTest 时间戳
-LAST_REVIEW=$(node scripts/lib/forge-state.mjs read .loop/session.json 2>/dev/null | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{const j=JSON.parse(d);console.log(j.lastReview||"")}catch{}}')
-LAST_TEST=$(node scripts/lib/forge-state.mjs read .loop/session.json 2>/dev/null | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{const j=JSON.parse(d);console.log(j.lastTest||"")}catch{}}')
+# session.json.lastReview / lastTest 时间戳（用 node argv 一行搞定，避免 stdin 拼接的字符转义地雷）
+SESSION_JSON=$(node scripts/lib/forge-state.mjs read .loop/session.json 2>/dev/null || echo '{}')
+LAST_REVIEW=$(node -e "try{process.stdout.write((JSON.parse(process.argv[1]).lastReview)||'')}catch{}" "$SESSION_JSON")
+LAST_TEST=$(node -e "try{process.stdout.write((JSON.parse(process.argv[1]).lastTest)||'')}catch{}" "$SESSION_JSON")
 
 # checkpoint findings（来自 dev-dev Step 3）+ 深度 review findings
 grep -E "CRITICAL|HIGH" .loop/dev/checkpoint-findings.md 2>/dev/null
@@ -259,29 +260,37 @@ node scripts/lib/forge-state.mjs read .loop/api-contracts.json > /tmp/contracts.
 # 2. 生成 / 更新 smoke spec（如果模板自带的 sample spec 是模板占位符，需替换 baseURL）
 export SMOKE_BASE_URL="<部署得到的主 URL>"
 
-# 3. 执行冒烟
-npx playwright test tests/smoke/ --reporter=json > /tmp/smoke-out.json 2>&1
+# 3. 执行冒烟（用 smoke 专属 config，stdout 只留 JSON；stderr 单独保存供排查）
+export SMOKE_OUT_FILE=".loop/deploy/smoke-report.json"
+mkdir -p .loop/deploy
+npx playwright test \
+  --config=tests/smoke/playwright.smoke.config.ts \
+  > .loop/deploy/smoke-stdout.log 2> .loop/deploy/smoke-stderr.log
 
-# 4. 汇总结果到 .loop/deploy/smoke-result.json
+# 4. 汇总结果到 .loop/deploy/smoke-result.json（读 outputFile 里的 JSON，不做行扫描）
 node -e '
   const fs = require("fs");
-  const raw = fs.readFileSync("/tmp/smoke-out.json", "utf8");
-  let json;
-  try { json = JSON.parse(raw.split("\n").find(l => l.startsWith("{"))); } catch { json = {stats: {expected:0, unexpected:0}, suites: []}; }
-  const passed = json.stats.expected || 0;
-  const failed = json.stats.unexpected || 0;
+  const path = require("path");
+  const reportPath = path.resolve("tests/smoke/smoke-report.json"); // playwright.smoke.config.ts 的 outputFile
+  let json = null;
+  try { json = JSON.parse(fs.readFileSync(reportPath, "utf8")); } catch {}
+  const stats = (json && json.stats) || {};
+  const passed = stats.expected || 0;
+  const failed = stats.unexpected || 0;
+  const flaky = stats.flaky || 0;
   const total = passed + failed;
   const out = {
     deployedAt: new Date().toISOString(),
     target: process.env.SMOKE_BASE_URL,
+    reportPath: json ? reportPath : null,
     totalAC: total,
-    passed, failed,
+    passed, failed, flaky,
     failedAC: [],
-    details: json.suites || [],
+    details: (json && json.suites) || [],
   };
   fs.mkdirSync(".loop/deploy", {recursive: true});
   fs.writeFileSync(".loop/deploy/smoke-result.json", JSON.stringify(out, null, 2));
-  console.log(JSON.stringify(out.stats || {passed, failed, total}));
+  console.log(JSON.stringify({passed, failed, flaky, total}));
 '
 
 # 5. 写 event

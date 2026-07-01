@@ -50,6 +50,9 @@
         "enhancer.applied",
         "patch.applied",
         "patch.rejected",
+        "worktree.created",
+        "worktree.merged",
+        "worktree.dropped",
         "mode.changed",
         "error",
         "note"

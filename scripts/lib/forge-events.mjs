@@ -12,7 +12,7 @@
 //
 // If <path> is omitted it defaults to <loop-dir>/events.jsonl.
 
-import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import {
   parseArgs,
@@ -87,6 +87,27 @@ async function cmdAppend(target, flags) {
   if (!event.loopId) {
     const loopId = readLoopId();
     if (loopId) event.loopId = loopId;
+  }
+
+  // Tie-break within the same millisecond. seq is optional but writing it here
+  // means metrics that sort by (ts, seq) stay stable when a burst of events
+  // shares a wallclock timestamp (typical for tight subagent-return loops).
+  if (event.seq === undefined) {
+    const priorLines = readLinesOrEmpty(target);
+    let seq = 0;
+    for (let i = priorLines.length - 1; i >= 0; i--) {
+      try {
+        const prev = JSON.parse(priorLines[i]);
+        if (prev.ts === event.ts) {
+          seq = (prev.seq ?? 0) + 1;
+          break;
+        }
+        break;
+      } catch {
+        continue;
+      }
+    }
+    event.seq = seq;
   }
 
   try {
@@ -229,6 +250,10 @@ async function main() {
 }
 
 main().catch((e) => {
+  if (e && e.isValidationError) {
+    process.stderr.write(`${PREFIX}: ${e.message}\n`);
+    process.exit(1);
+  }
   process.stderr.write(`${PREFIX}: ${e.stack || e.message}\n`);
   process.exit(1);
 });
