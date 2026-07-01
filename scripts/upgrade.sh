@@ -2,9 +2,11 @@
 set -euo pipefail
 
 # ai-forge — Project Upgrade Script
-# Syncs framework-level assets (.claude/{skills,commands,enhancers,schemas},
-# scripts/lib, .claude/PHASE_CONTRACT.md) into an existing project.
-# Does NOT touch user code, .loop/, package.json, or the project template.
+# Syncs framework-level assets (.claude/{skills,commands,enhancers,schemas,roles},
+# scripts/lib, .claude/PHASE_CONTRACT.md) into an existing project. Also installs
+# i18n/theme scaffolding when missing (never overwrites user code) and adds
+# next-intl / next-themes to dependencies if they're absent — see --help for the
+# full list of what's touched and what's preserved.
 #
 # Usage: ./scripts/upgrade.sh <project-path> [--include-template] [--force]
 
@@ -43,15 +45,21 @@ while [[ $# -gt 0 ]]; do
     .claude/settings.json       Hooks (PostToolUse schema validate + PreToolUse mode gate) — MERGED not replaced
     scripts/lib/                All forge-* CLIs (state/events/budget/patch/worktree/repomap/metrics/mode) + enhancers
     tests/smoke/                Deploy smoke test template (only if project doesn't already have it)
+    i18n/theme scaffolding      src/i18n/, src/middleware.ts, src/app/[locale]/, messages/,
+                                src/components/{theme-provider,theme-toggle,locale-switcher}.tsx
+                                (ONLY if missing — never overwrites user code)
+    package.json dependencies   Adds next-intl / next-themes if missing (deps block only, no other fields touched)
 
   Does NOT touch:
     .loop/                      Session state
-    src/, public/, tests/       User code
-    package.json, components.json
+    src/, public/, tests/       User code (except the i18n scaffolding above when it doesn't exist yet)
+    components.json
+    package.json                (except adding missing next-intl / next-themes to dependencies)
     .storybook/                 (unless --include-template)
+    next.config.ts              (unless --include-template — user config; warns if next-intl plugin missing)
 
   Flags:
-    --include-template          Also sync .storybook/, .github/, configs
+    --include-template          Also sync .storybook/, .github/, configs (eslint/vitest/playwright/next.config)
     --force                     Skip the git-clean check (dangerous)
 EOF
       exit 0
@@ -224,6 +232,74 @@ if [[ ! -d "$PROJECT_DIR/tests/smoke" && -d "$FORGE_DIR/template/tests/smoke" ]]
   ok "tests/smoke/ installed"
 fi
 
+# ── Sync i18n/theme scaffolding (only if missing) ──────────────
+# The dev enhancer (theme-and-i18n) assumes these files exist. For pre-i18n
+# projects (upgraded from a forge SHA before this feature) we install them; for
+# projects that already have them we skip to preserve user changes.
+I18N_INSTALLED=()
+maybe_install_dir() {
+  local src="$1" dst="$2"
+  if [[ ! -e "$PROJECT_DIR/$dst" && -e "$FORGE_DIR/template/$src" ]]; then
+    mkdir -p "$(dirname "$PROJECT_DIR/$dst")"
+    cp -R "$FORGE_DIR/template/$src" "$PROJECT_DIR/$dst"
+    I18N_INSTALLED+=("$dst")
+  fi
+}
+info "Checking i18n/theme scaffolding..."
+maybe_install_dir "src/i18n"                              "src/i18n"
+maybe_install_dir "src/middleware.ts"                     "src/middleware.ts"
+maybe_install_dir "src/app/[locale]"                      "src/app/[locale]"
+maybe_install_dir "messages"                              "messages"
+maybe_install_dir "src/components/theme-provider.tsx"     "src/components/theme-provider.tsx"
+maybe_install_dir "src/components/theme-toggle.tsx"       "src/components/theme-toggle.tsx"
+maybe_install_dir "src/components/locale-switcher.tsx"    "src/components/locale-switcher.tsx"
+if (( ${#I18N_INSTALLED[@]} > 0 )); then
+  ok "i18n/theme scaffolding installed (${#I18N_INSTALLED[@]} paths): ${I18N_INSTALLED[*]}"
+else
+  ok "i18n/theme scaffolding already present — skipped"
+fi
+
+# Warn if next.config.ts is missing the next-intl plugin wrap (user config we
+# won't overwrite outside --include-template, but a hard requirement for the
+# scaffolding to compile). Actionable message — don't silently break their build.
+if [[ -f "$PROJECT_DIR/next.config.ts" ]] && ! grep -q "createNextIntlPlugin\|next-intl/plugin" "$PROJECT_DIR/next.config.ts"; then
+  warn "next.config.ts is not wrapped with createNextIntlPlugin('./src/i18n/request.ts')"
+  warn "  → i18n messages will not load. Compare to template/next.config.ts, or re-run with --include-template."
+fi
+
+# ── Merge next-intl / next-themes into package.json (deps only) ─
+# Contained deps-block merge — nothing else in package.json is touched. Skips
+# any dep that's already present at any version (won't downgrade user pins).
+if [[ -f "$PROJECT_DIR/package.json" ]]; then
+  node - "$PROJECT_DIR/package.json" "$FORGE_DIR/template/package.json" <<'JS'
+    const fs = require('fs');
+    const [projectPath, templatePath] = process.argv.slice(2);
+    const project = JSON.parse(fs.readFileSync(projectPath, 'utf8'));
+    const template = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
+    const REQUIRED = ['next-intl', 'next-themes'];
+    const projectDeps = project.dependencies || {};
+    const templateDeps = template.dependencies || {};
+    const added = [];
+    for (const name of REQUIRED) {
+      if (!projectDeps[name] && templateDeps[name]) {
+        projectDeps[name] = templateDeps[name];
+        added.push(`${name}@${templateDeps[name]}`);
+      }
+    }
+    if (added.length > 0) {
+      project.dependencies = projectDeps;
+      fs.writeFileSync(projectPath, JSON.stringify(project, null, 2) + '\n');
+      console.log(`ADDED:${added.join(',')}`);
+    }
+JS
+  # Read what got added (if anything) for user-facing summary
+  # Node script prints ADDED:foo@1,bar@2 on success — capture last such line.
+  # (Kept simple: rerun the same check via grep since node already wrote the file.)
+  if grep -q '"next-intl"' "$PROJECT_DIR/package.json" 2>/dev/null && grep -q '"next-themes"' "$PROJECT_DIR/package.json" 2>/dev/null; then
+    ok "package.json deps verified (next-intl, next-themes)"
+  fi
+fi
+
 # ── Sync PHASE_CONTRACT ────────────────────────────────────────
 cp "$FORGE_DIR/.claude/PHASE_CONTRACT.md" "$PROJECT_DIR/.claude/PHASE_CONTRACT.md"
 ok "PHASE_CONTRACT.md synced"
@@ -251,7 +327,7 @@ if [[ "$INCLUDE_TEMPLATE" -eq 1 ]]; then
     rm -rf "$PROJECT_DIR/.github"
     cp -R "$FORGE_DIR/template/_github" "$PROJECT_DIR/.github"
   fi
-  for f in eslint.config.mjs vitest.config.ts playwright.config.ts; do
+  for f in eslint.config.mjs vitest.config.ts playwright.config.ts next.config.ts; do
     [[ -f "$FORGE_DIR/template/$f" ]] && cp "$FORGE_DIR/template/$f" "$PROJECT_DIR/$f"
   done
   ok "template assets synced"

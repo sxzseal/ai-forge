@@ -1,0 +1,21 @@
+{
+  "Meta": {
+    "title": "__PROJECT_NAME__",
+    "description": "Built with ai-forge"
+  },
+  "Home": {
+    "title": "__PROJECT_NAME__",
+    "subtitle": "Built with ai-forge",
+    "apiHealth": "API Health",
+    "storybook": "Storybook"
+  },
+  "ThemeToggle": {
+    "label": "Toggle theme",
+    "light": "Light",
+    "dark": "Dark",
+    "system": "System"
+  },
+  "LocaleSwitcher": {
+    "label": "Switch language"
+  }
+}

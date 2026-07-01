@@ -1,0 +1,21 @@
+{
+  "Meta": {
+    "title": "__PROJECT_NAME__",
+    "description": "由 ai-forge 构建"
+  },
+  "Home": {
+    "title": "__PROJECT_NAME__",
+    "subtitle": "由 ai-forge 构建",
+    "apiHealth": "API 健康检查",
+    "storybook": "Storybook"
+  },
+  "ThemeToggle": {
+    "label": "切换主题",
+    "light": "亮色",
+    "dark": "暗色",
+    "system": "跟随系统"
+  },
+  "LocaleSwitcher": {
+    "label": "切换语言"
+  }
+}

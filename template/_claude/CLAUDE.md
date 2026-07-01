@@ -15,8 +15,20 @@
 
 ```
 src/
-├── app/                       # Next.js App Router pages and API routes
-├── components/ui/             # L1: shadcn/ui atoms (read-only, do not modify)
+├── app/
+│   ├── [locale]/              # ★ Locale-scoped pages (layout + page live here)
+│   ├── api/                   # API routes (locale-agnostic)
+│   └── globals.css            # Tailwind base + theme CSS variables
+├── components/
+│   ├── ui/                    # L1: shadcn/ui atoms (read-only, do not modify)
+│   ├── theme-provider.tsx     # next-themes wrapper
+│   ├── theme-toggle.tsx       # light/dark/system cycle button
+│   └── locale-switcher.tsx    # zh-CN / en switcher
+├── i18n/
+│   ├── routing.ts             # locales + defaultLocale
+│   ├── request.ts             # server-side message loader
+│   └── navigation.ts          # Link / useRouter / redirect (locale-aware)
+├── middleware.ts              # next-intl locale detection
 ├── features/                  # L3: business feature modules
 │   ├── _shared/               # L2: project-level shared primitives
 │   │   ├── state/             #   Loading / Skeleton / Empty / Error
@@ -26,7 +38,20 @@ src/
     ├── utils.ts               # cn() helper
     ├── api-response.ts        # ApiResponse<T> envelope + ok() / err() helpers
     └── request.ts             # request<T>() — fetch wrapper consuming the envelope
+messages/
+├── zh-CN.json                 # ★ Default locale
+└── en.json                    # ★ Second locale — MUST stay in sync with zh-CN
 ```
+
+## Theme & i18n (built-in)
+
+- **Theme**: `next-themes` with `attribute="class"`, `defaultTheme="light"`, `enableSystem`. Tailwind uses semantic tokens (`bg-background`, `text-foreground`, `bg-primary`, `border-input`, etc.) that swap via CSS variables in `globals.css`. **Never hardcode colors** (`bg-white`, `#fff`, `text-gray-*`).
+- **i18n**: `next-intl` with `zh-CN` (default) and `en`. All user-facing text goes through `useTranslations()` / `getTranslations()`. **Never write bare strings** in JSX. Every new key must be added to **both** `messages/zh-CN.json` and `messages/en.json`.
+- **Routing**: pages under `src/app/[locale]/`. First line of every page: `const { locale } = await params; setRequestLocale(locale)`. Use `@/i18n/navigation` (`Link`, `useRouter`, `redirect`) — never `next/link` or `next/navigation`.
+- **Static generation**: page exports `generateStaticParams` that maps `routing.locales`.
+- **Ready-made controls**: `<ThemeToggle />` and `<LocaleSwitcher />` in `@/components` — reuse, don't reinvent.
+
+See `.claude/enhancers/proto/theme-and-i18n.md` and `.claude/enhancers/dev/theme-and-i18n.md` for the full rules the phase skills enforce.
 
 ## Component Layers
 
