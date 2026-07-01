@@ -1,0 +1,28 @@
+{
+  "role": "api-route",
+  "description": "Implement Next.js API routes and Zod validators according to .loop/api-contracts.json.",
+  "readOnly": false,
+  "allowedTools": ["Read", "Glob", "Grep", "Write", "Edit", "Bash"],
+  "allowedBashPatterns": [
+    "^npm (run|i|install|list) ",
+    "^pnpm (run|i|install|list) ",
+    "^npx tsc",
+    "^git (status|diff|log|show) ",
+    "^ls ",
+    "^cat ",
+    "^node scripts/lib/forge-(state|events|patch|budget)\\.mjs "
+  ],
+  "deniedBashPatterns": [
+    "\\bgit push\\b",
+    "\\bgit reset --hard\\b",
+    "\\brm -rf\\b"
+  ],
+  "requiredOutputs": [
+    { "path": ".loop/dev/subagent-receipts/<id>.json", "schema": "subagent-receipt" }
+  ],
+  "promptInjections": [
+    "API responses MUST use ok() / err() from src/lib/api-response.ts. Never hand-write { status_code, data, message }.",
+    "Every request body must be validated with Zod safeParse before use.",
+    "API endpoint fields must match .loop/api-contracts.json exactly. If a mismatch is discovered, stop and log a deviation."
+  ]
+}

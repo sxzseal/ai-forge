@@ -191,12 +191,17 @@ Loop ID: loop-YYYYMMDD-NNN
 
 | 命令 | 效果 |
 |------|------|
-| `/dev-loop 用户管理系统` | 全流程（3 阶段：proto → dev → deploy） |
+| `/dev-loop 用户管理系统` | 全流程（3 阶段：proto → dev → deploy），phase 间用户确认 |
 | `/dev-loop 加个登录 --to proto` | 只做原型阶段（含标注迭代） |
 | `/dev-loop --from dev` | 从开发开始（需要验收清单存在） |
 | `/dev-loop --resume` | 从上次中断处继续 |
 | `/dev-loop 修个 bug --from dev` | 跳过原型，直接开发 |
 | `/dev-loop 后台管理系统 --skip-feedback` | 全流程但原型一次生成不进标注循环 |
+| `/dev-proto <需求>` | **单独运行原型阶段**，跨 session 可接力 |
+| `/dev-dev` | **单独运行开发阶段**，读取 `.loop/acceptance-checklist.md` |
+| `/dev-deploy [env]` | **单独运行部署阶段**，preview/staging/production |
 | `/dev-prd <需求>` | （可选）单独生成结构化 PRD |
 | `/dev-review` | （可选）独立深度代码审查 |
 | `/dev-test` | （可选）独立生成测试套件 |
+
+跨 session 独立运行三阶段的完整契约见 [../PHASE_CONTRACT.md](../PHASE_CONTRACT.md)。

@@ -220,10 +220,23 @@ ai-forge/
 │   └── commands/
 │       └── dev-loop.md         # 默认管线编排命令
 │
+├── .claude/
+│   ├── schemas/                # JSON Schemas（session/api-contracts/task-state）
+│   ├── enhancers/              # 阶段增强能力包（proto/dev/deploy）
+│   ├── skills/                 # 6 个 dev-* skill
+│   ├── commands/               # 4 个 slash command
+│   └── PHASE_CONTRACT.md       # 跨阶段状态契约
+│
+├── scripts/
+│   ├── create.sh               # 生成新项目
+│   ├── upgrade.sh              # 升级现有项目的框架资产
+│   └── lib/
+│       ├── forge-state.mjs     # 状态管理 CLI（atomic write + schema 校验）
+│       └── enhancers.mjs       # enhancer 扫描 / 选择 CLI
+│
 ├── template/                   # 项目模板（create.sh 复制此目录）
 │   ├── _claude/                # → .claude/（安装时重命名）
-│   ├── _storybook/             # → .storybook/（含 visual-feedback/）
-│   ├── api-contracts.schema.json # API 契约 JSON Schema（单一真源）
+│   ├── _storybook/             # → .storybook/（含 visual-feedback/，可选）
 │   ├── src/
 │   │   ├── app/                # Next.js App Router 入口
 │   │   ├── components/ui/      # shadcn 原子组件（L1，只读）
@@ -301,11 +314,11 @@ my-app/
   - `use-annotations.ts` / `types.ts` — 状态管理 + 类型
 - 定稿后反推「验收清单」（`.loop/acceptance-checklist.md`），作为开发输入
 - 生成 stories-manifest.md，记录 story → 组件 → API 映射
-- 同步推导 `.loop/api-contracts.json`（schema 与 `template/api-contracts.schema.json` 一致）
+- 同步推导 `.loop/api-contracts.json`（schema 与 `.claude/schemas/api-contracts.schema.json` 一致，由 `forge-state` CLI 校验）
 
 ### ⚡ Phase 2：并行开发（dev-dev）
 
-使用 **lobster-lead 模式**（内置的任务编排策略）：
+按 **拆解 → 并行 → checkpoint** 三步走：
 
 ```
 依赖分析 → 任务拆解 → 并行派发 subagent → 阶段性 commit

@@ -12,7 +12,33 @@
       "Bash(git diff*)",
       "Bash(git branch*)",
       "Bash(git show*)",
-      "Bash(git stash*)"
+      "Bash(git stash*)",
+      "Bash(git tag*)",
+      "Bash(git worktree*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$CLAUDE_TOOL_FILE_PATH\" 2>/dev/null | grep -qE '\\.loop/.*(session|task-state|api-contracts)\\.json$'; then SCHEMA=$(basename \"$CLAUDE_TOOL_FILE_PATH\" .json); [ \"$SCHEMA\" = \"task-state\" ] && SCHEMA=task-state; node scripts/lib/forge-state.mjs validate \"$CLAUDE_TOOL_FILE_PATH\" --schema \"$SCHEMA\" 1>&2; fi"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CMD=\"${CLAUDE_TOOL_INPUT_COMMAND:-}\"; if echo \"$CMD\" | grep -qE '\\bgit push\\b|\\bvercel .*--prod\\b|\\brailway up .*production\\b|\\bnpm publish\\b|\\brm -rf\\b|--no-verify'; then node scripts/lib/forge-mode.mjs gate --tool Bash --command \"$CMD\" 1>&2 || exit 2; fi"
+          }
+        ]
+      }
     ]
   }
 }

@@ -1,0 +1,31 @@
+{
+  "role": "feature-impl",
+  "description": "Implement a feature module (queries.ts / mutations.ts / views / dialogs) based on a plan task.",
+  "readOnly": false,
+  "allowedTools": ["Read", "Glob", "Grep", "Write", "Edit", "Bash"],
+  "allowedBashPatterns": [
+    "^npm (run|i|install|ci|list) ",
+    "^pnpm (run|i|install|list|add) ",
+    "^npx tsc",
+    "^npx eslint",
+    "^git (status|diff|log|show|branch) ",
+    "^ls ",
+    "^cat ",
+    "^node scripts/lib/forge-(state|events|patch|budget)\\.mjs "
+  ],
+  "deniedBashPatterns": [
+    "\\bgit push\\b",
+    "\\bgit reset --hard\\b",
+    "\\bnpm publish\\b",
+    "\\brm -rf\\b",
+    "--no-verify"
+  ],
+  "requiredOutputs": [
+    { "path": ".loop/dev/subagent-receipts/<id>.json", "schema": "subagent-receipt" }
+  ],
+  "promptInjections": [
+    "You are a feature-impl subagent. Stay within filesPlanned from the plan.json task assigned to you. Anything outside must be logged as a deviation with a reason.",
+    "Prefer SEARCH-REPLACE patches to .loop/dev/pending-patches/<id>-<seq>.patch over direct Edit when possible.",
+    "You MUST write your receipt to .loop/dev/subagent-receipts/<id>.json before returning."
+  ]
+}

@@ -1,6 +1,6 @@
 ---
 name: dev-dev
-description: 从验收清单 + 原型出发，使用 lobster-lead 模式拆解任务、并行派发 subagent 开发、checkpoint 内嵌轻量自检后提交。触发词："开始开发"、"dev-dev"、"实现功能"。被 /dev-loop 作为 Phase 2 调用。
+description: 从验收清单 + 原型出发，按「拆解 → 并行 → checkpoint」三阶段开发：先拆任务树 + task-state 落盘，再并行派发 subagent，最后 checkpoint 内嵌轻量自检后提交。触发词："开始开发"、"dev-dev"、"实现功能"。被 /dev-loop 作为 Phase 2 调用。
 ---
 
 # Dev Dev — 开发执行器
@@ -328,9 +328,77 @@ Story → Feature 预映射
 
 > 映射方式：**完全复用**（story 组件结构直接用于 view）/ **部分复用**（story 提供布局参考，view 需扩展）/ **无对应 story**（验收清单要求但原型未覆盖）。
 
+**加载增强能力包**（两段式，避免全量预加载）：
+
+```bash
+# 1. 只扫 frontmatter
+node scripts/lib/enhancers.mjs list dev
+
+# 2. 根据当前任务关键词过滤（如 query,mutation,state-management,api-error）
+node scripts/lib/enhancers.mjs select dev --keywords "<kw1,kw2,...>"
+```
+
+处理规则：
+
+- 返回的 `selected` 数组即启用清单；对每份逐一 `Read` 全文，纳入上下文
+- 用 `AskUserQuestion` 把 `selected` / `skipped` 展示给用户确认
+- Step 1 任务拆解时把增强规范纳入约束（如某 enhancer 规定「所有 mutation 必须 optimistic update」，拆解就要体现）
+- Step 2 派发 subagent 时，把启用的 enhancer 内容**完整拷贝**到 subagent prompt 里（subagent 看不到主 skill 的上下文）
+- Step 3 checkpoint 自检时按 enhancer 内容补充检查项
+- 多个 enhancer 冲突按 frontmatter `priority` 排序：`high` > `medium` > `low`；同优先级按文件名字典序
+- enhancer 与本 skill 红线冲突时（如「禁止 `any`」），**红线胜**
+
+用户确认后落盘 manifest：
+
+```bash
+node scripts/lib/enhancers.mjs manifest --phase dev \
+  --selected "<name1>,<name2>" --skipped "<name3>"
+```
+
+Step 6 完成时把 `selected` 数组通过 `forge-state` 写入 `session.json.phases.dev.enhancers`：
+
+```bash
+echo '{"phases":{"dev":{"enhancers":["<name1>","<name2>"]}}}' \
+  | node scripts/lib/forge-state.mjs update .loop/session.json --schema session
+```
+
+若 `list` 输出为空数组 → 跳过本步，按默认约定执行。
+
 ---
 
-### Step 1：任务拆解（lobster-lead Phase 1）
+### Step 0.5：Harness 协议启动（events + budget + repo-map）
+
+**这一步给 Step 1-6 铺路，不可跳过**。
+
+```bash
+# 1. 写 phase.enter
+node scripts/lib/forge-events.mjs append --kind phase.enter --phase dev --step step.0
+
+# 2. 检查预算（默认 100 steps / 30 subagents / 3 retries per checkpoint）
+node scripts/lib/forge-budget.mjs check dev
+
+# 3. 生成 repo-map（后续每个 subagent prompt 都自带这份 context）
+node scripts/lib/forge-repomap.mjs build --max-tokens 2000
+# → .loop/dev/repo-map.txt
+```
+
+从此往后，**每个 Step / subagent 派发 / self-check / checkpoint / patch apply 都必须写 event**（见 PHASE_CONTRACT §10 kind 枚举）。示例：
+
+```bash
+node scripts/lib/forge-events.mjs append --kind step.enter --phase dev --step step.1
+node scripts/lib/forge-budget.mjs consume dev --kind step  # 消耗 1 个 step 额度
+```
+
+### Plan / Act 协议（Step 1 vs Step 2+）
+
+从这个版本起 dev-dev 采用 **Plan / Act 显式分离**：
+
+- **Step 1 是纯 Plan 模式**：派发 `plan-analyst` role subagent（read-only，禁 Write/Edit），产出 `.loop/dev/plan.json`（schema: `plan`）。AskUserQuestion 批准 → 写入 `approvedAt`。
+- **Step 2-4 是 Act 模式**：subagent 只能改 plan.tasks[].filesPlanned 里的文件；多改的必须进 receipt.deviations。每个 subagent 在 `.loop/.worktrees/<id>/` 沙箱里干活。
+
+---
+
+### Step 1：任务拆解（拆解阶段）
 
 基于验收清单 + Stories Manifest，按 **feature module 结构**拆解为任务树：
 
@@ -372,18 +440,77 @@ Story → Feature 预映射
 > 每个任务对应的文件路径参见上方「开发约定」章节。
 > 任务拆解必须覆盖验收清单中所有验收项，不能遗漏。
 
-**STOP** — 用 `AskUserQuestion` 让用户确认任务拆解：
+**Plan 模式派发（read-only subagent 产 plan.json）**：
+
+派发一个 `plan-analyst` 角色的 subagent，让它读 acceptance-checklist + stories-manifest + api-contracts.json + repo-map.txt，产出 `.loop/dev/plan.json`（schema: `plan`）。
+
+```bash
+# 派发前
+node scripts/lib/forge-events.mjs append --kind subagent.spawn --phase dev --step step.1 \
+  --payload '{"id":"sa-plan","role":"plan-analyst"}'
+
+# subagent prompt 必须包含 .claude/roles/plan-analyst.json 的 promptInjections
+# 完成后自动写 .loop/dev/plan.json 和 .loop/dev/subagent-receipts/sa-plan.json
+```
+
+主 skill 收到后：
+
+```bash
+# 1. 校验 plan.json
+node scripts/lib/forge-state.mjs validate .loop/dev/plan.json --schema plan
+
+# 2. 校验 receipt
+node scripts/lib/forge-state.mjs validate .loop/dev/subagent-receipts/sa-plan.json --schema subagent-receipt
+
+# 3. 写 subagent.return event
+```
+
+**STOP** — 用 `AskUserQuestion` 让用户确认 plan.json：
 
 选项：
-- **确认，开始开发**：任务拆解没问题
-- **调整任务**：修改任务列表
-- **只做核心**：只实现 P0 验收项（如 AC-001 ~ AC-099）
+- **确认，开始 Act 模式**：进入 Step 2
+- **调整任务**：修改 plan.json 后重新审核
+- **只做核心**：过滤掉 non-P0 任务后确认
+
+用户确认后写 `approvedAt`：
+
+```bash
+echo "{\"approvedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+  | node scripts/lib/forge-state.mjs update .loop/dev/plan.json --schema plan
+```
+
+**用户确认后落盘 task-state**（Step 2/3 用于跨 session resume；task-state 与 plan.json 一致）：
+
+```bash
+# 组装每个任务的初始状态，通过 forge-state 写入
+cat <<'JSON' | node scripts/lib/forge-state.mjs write .loop/dev/task-state.json --schema task-state
+{
+  "loopId": "<loop-id from session.json>",
+  "createdAt": "<ISO now>",
+  "tasks": [
+    { "id": "T001", "title": "lib/validators/<resource>.ts", "layer": "infra", "status": "pending", "deps": [], "acRefs": ["AC-101"] },
+    { "id": "T002", "title": "app/api/<resource>/route.ts (GET+POST)", "layer": "api", "status": "pending", "deps": ["T001"], "acRefs": ["AC-101","AC-102"] }
+  ]
+}
+JSON
+```
+
+> 每个任务的 `id` 用 `T001..T00N`，`deps` 引用其他任务 id。schema 校验失败 CLI 会拒写并原文件不变。
 
 ---
 
-### Step 2：并行开发（lobster-lead Phase 2）
+### Step 2：并行开发（并行阶段）
 
 按依赖图，使用 `TaskCreate` 创建任务，然后并行派发 subagent。
+
+**每个任务派发前**（更新 task-state 为 `in_progress`）：
+
+```bash
+node scripts/lib/forge-state.mjs set .loop/dev/task-state.json --schema task-state \
+  --key "tasks.<index>.status" --value '"in_progress"'
+```
+
+> 由于 task-state 用数组，直接 `--key "tasks.0.status"` 这类 dotpath 会覆盖数组元素。实操中主 skill 应先 `forge-state read`，在内存里修改对应任务的 status/startedAt，再 `forge-state update` 全量写回（schema 会校验完整性）。
 
 **派发策略**：
 
@@ -413,6 +540,46 @@ Story → Feature 预映射
    - import 用 `@/` 别名，不写深层相对路径
    - 共享原语从 `@/features/_shared/` 导入，不重复实现
 
+**Harness 协议（每个 subagent 派发时强制）**：
+
+5. **Role 约束** — 从 `.claude/roles/<role>.json` Read `allowedTools` + `promptInjections`，整段拷贝到 subagent prompt 的「工具约束」段
+6. **Repo Map 上下文** — 附带 `.loop/dev/repo-map.txt` 的相关切片（不用全塞，按 filesPlanned 目录过滤）
+7. **Worktree 沙箱** — 派发前主 skill 执行：
+   ```bash
+   node scripts/lib/forge-worktree.mjs create --subagent <id>
+   node scripts/lib/forge-events.mjs append --kind subagent.spawn --phase dev --step step.2 \
+     --payload '{"id":"<id>","role":"<role>","taskRef":"<task-id>"}'
+   node scripts/lib/forge-budget.mjs consume dev --kind subagent
+   ```
+   subagent prompt 里指令：`cd .loop/.worktrees/<id> && ...`
+8. **Patch 优先于 Edit** — subagent 应输出 SEARCH-REPLACE 补丁到 `.loop/dev/pending-patches/<id>-<seq>.patch` 而非直接 Edit（尤其对已有文件）
+9. **Receipt 必填** — subagent 完成前必须写：
+   ```
+   .loop/dev/subagent-receipts/<id>.json  (schema: subagent-receipt)
+   ```
+   通过 `node scripts/lib/forge-state.mjs write ... --schema subagent-receipt` 写入，校验不通过 receipt 无效 = subagent 失败。
+
+**主 skill 收 subagent 返回**：
+
+```bash
+# 1. 校验 receipt
+node scripts/lib/forge-state.mjs validate .loop/dev/subagent-receipts/<id>.json --schema subagent-receipt
+
+# 2. 逐个应用 patch（原子）
+for p in $(jq -r '.patchesApplied[]' .loop/dev/subagent-receipts/<id>.json); do
+  node scripts/lib/forge-patch.mjs apply "$p" || node scripts/lib/forge-patch.mjs reject "$p"
+done
+
+# 3. 合 worktree
+node scripts/lib/forge-worktree.mjs merge --subagent <id> --message "feat: <task-title>"
+
+# 4. 写 subagent.return event
+node scripts/lib/forge-events.mjs append --kind subagent.return --phase dev --step step.2 \
+  --payload '{"id":"<id>","status":"success","filesChanged":<n>}'
+```
+
+**失败处理**：receipt 校验失败 / patch apply 失败 / self-check 不过 → `forge-worktree drop --subagent <id>`，写 `subagent.failed` event，进入 Step 3 的重试预算逻辑。
+
 ---
 
 ### Step 3：Checkpoint 内嵌自检 + 提交
@@ -428,28 +595,80 @@ Story → Feature 预映射
    npx tsc --noEmit
    ```
 
-   并对刚改的文件做**4 项快速自检**（grep + 人工判断）：
+   并对刚改的文件做**4 项快速自检**（结果结构化落盘）：
 
    | 检查项 | 命令 / 标准 | 不通过时 |
    |-------|-----------|---------|
    | 禁用 `any` / `@ts-ignore` | `grep -nE '\b(any\b\|@ts-ignore\|@ts-expect-error)' <files>` | 直接修复，不留 |
-   | 裸 `useEffect + fetch` | `grep -nE 'useEffect\([^)]*fetch\(' <files>` | 改用服务端组件 / TanStack Query |
+   | 裸 `useEffect + fetch`（多行匹配） | `grep -Pnzo 'useEffect\(\s*\(\)\s*=>\s*\{[^}]*fetch\(' <files>` — 若 `-P` 不可用回退 `perl -0777 -ne 'print "$1\n" while /(useEffect\(\s*\(\)\s*=>\s*\{[^}]*fetch\([^)]*\))/gs' <files>` | 改用服务端组件 / TanStack Query |
    | mutation 后忘记 invalidate | 仅在装了 TanStack Query 且修改了 `mutations.ts` 时检查：`grep -L 'invalidateQueries' <mutations.ts>` | 补 `invalidateQueries` |
    | API 响应格式 | grep route.ts 是否用了 `ok(` / `err(` 而非裸 `NextResponse.json` 信封 | 改用 `ok` / `err` |
 
-4. 自检全部通过 → checkpoint commit：
+   > **多行 grep 说明**：`useEffect + fetch` 常跨行（`useEffect(() => {\n  fetch(...)\n})`)，单行 grep 会漏。macOS 自带 grep 不支持 `-P`；主 skill 若检测到 `grep -P` 失败，回退 perl 或 ripgrep（`rg -U 'useEffect\(...\)'`）。
+
+4. **每一项检查结果都必须写入结构化 findings**（Step 4 汇总 / dev-deploy 门控依赖这份）：
 
    ```bash
-   # 调用 /smart-commit
+   cat >> .loop/dev/checkpoint-findings.md <<EOF
+   | $(date -u +%FT%TZ) | <task-id T001..> | <file>:<line> | <rule-id> | <severity CRITICAL/HIGH/MEDIUM/LOW> | <auto-fixed/kept/reviewed> |
+   EOF
    ```
 
-5. 自检不通过 → 修复后重跑，**不放过到下一任务**。
+   文件顶部初次写入时补表头：`| ts | task | location | rule | severity | action |`。
 
-> 这里的自检只是「门槛级」检查。要做深度安全 / 性能 / 架构审查，用户手动跑 `/dev-review`。
+5. 自检全部通过 → 更新 task-state：
+
+   ```bash
+   # 先 read 得到当前 task-state，在内存里 patch，然后 update 全量写回
+   node scripts/lib/forge-state.mjs read .loop/dev/task-state.json > /tmp/ts.json
+   # ... 修改 tasks[i].status="done"、commits=[...]、completedAt=now ...
+   cat /tmp/ts.json | node scripts/lib/forge-state.mjs write .loop/dev/task-state.json --schema task-state
+   ```
+
+6. checkpoint commit + 打 git tag（`/dev-undo` 依赖）：
+
+   ```bash
+   # 生成 checkpoint 编号（自增）
+   CP_N=$(git tag --list 'loop-*-cp-*' | wc -l | tr -d ' ')
+   CP_N=$((CP_N + 1))
+   LOOP_ID=$(node scripts/lib/forge-state.mjs read .loop/session.json | jq -r .loopId)
+   TAG="${LOOP_ID}-cp-${CP_N}"
+
+   # 调用 /smart-commit 生成 commit
+   # 然后打 tag（在 commit 之后）
+   git tag "$TAG"
+
+   # 写 checkpoint.created event + 追加到 session.json.checkpoints[]
+   node scripts/lib/forge-events.mjs append --kind checkpoint.created --phase dev \
+     --payload "$(jq -n --arg name "cp-$CP_N" --arg tag "$TAG" --arg sha "$(git rev-parse HEAD)" \
+       '{name: $name, tag: $tag, sha: $sha, summary: "<task summary>"}')"
+
+   node scripts/lib/forge-state.mjs read .loop/session.json | jq \
+     --arg name "cp-$CP_N" --arg tag "$TAG" --arg sha "$(git rev-parse HEAD)" \
+     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+     '.checkpoints = ((.checkpoints // []) + [{name: $name, tag: $tag, sha: $sha, createdAt: $ts, phase: "dev"}])' \
+     | node scripts/lib/forge-state.mjs write .loop/session.json --schema session
+   ```
+
+7. 自检不通过 → **走重试预算**：
+
+   ```bash
+   # 每次失败先记 event 和消耗预算
+   node scripts/lib/forge-events.mjs append --kind selfcheck.fail --phase dev \
+     --payload '{"checkpoint":"cp-<N>","failure":"<summary>"}'
+   node scripts/lib/forge-budget.mjs consume dev --kind retry --checkpoint "cp-<N>"
+
+   # 触顶时（exit 2）必须 AskUserQuestion，不允许无限重试
+   # 选项：「加预算继续」/「接受失败并跳过」/「回炉重做上一 checkpoint」
+   ```
+
+   默认 `maxSelfCheckRetries: 3`。修好后重跑自检 + 通过后走 Step 3.6 打 tag。
+
+> 这里的自检只是「门槛级」检查，findings 是给 `dev-deploy` 生产闸门用的一手信号。要做深度安全 / 性能 / 架构审查，用户手动跑 `/dev-review`，其结果写入 `.loop/review/findings.md`。
 
 ---
 
-### Step 4：开发完成（lobster-lead Phase 3）
+### Step 4：开发完成（收敛阶段）
 
 所有子任务完成后：
 
@@ -590,7 +809,11 @@ Commits：<N> 次
 {
   "currentPhase": "deploy",
   "phases": {
-    "dev": { "status": "completed", "completedAt": "<ISO timestamp>" }
+    "dev": {
+      "status": "completed",
+      "completedAt": "<ISO timestamp>",
+      "enhancers": ["react-query-patterns", "..."]
+    }
   },
   "artifacts": {
     "acceptanceChecklist": ".loop/acceptance-checklist.md",
@@ -602,6 +825,23 @@ Commits：<N> 次
     "acceptanceCoverage": ".loop/dev/acceptance-coverage.md"
   }
 }
+```
+
+> `phases.dev.enhancers` 记录本轮启用的增强 skill `name` 列表（来自 Step 0 扫描结果，不含 `_` 开头的占位文件）。
+
+**Metrics 聚合 + phase.exit event**：
+
+```bash
+# 聚合 phase 指标（从 events.jsonl 计算）
+node scripts/lib/forge-metrics.mjs compute --phase dev
+# → .loop/phases/dev/metrics.json
+
+# 写 phase.exit event
+node scripts/lib/forge-events.mjs append --kind phase.exit --phase dev
+
+# 把 metricsPath 写入 session.json.phases.dev
+echo '{"phases":{"dev":{"metricsPath":".loop/phases/dev/metrics.json"}}}' \
+  | node scripts/lib/forge-state.mjs update .loop/session.json --schema session
 ```
 
 ---
@@ -623,6 +863,7 @@ Commits：<N> 次
 13. **API 响应统一格式** — 所有 `/api/*` route 用 `ok()` / `err()`（`src/lib/api-response.ts`），不手写 `NextResponse.json` 信封
 14. **URL 状态用 searchParams** — 刷新后仍需保留的状态不存 `useState`
 15. **API 字段以 `.loop/api-contracts.json` 为准** — 不在开发阶段悄悄改字段，要改先回 dev-proto 同步契约
+16. **必须加载并遵守 `.claude/enhancers/dev/*.md`** — Step 0 扫描的所有增强 skill（`_` 开头的占位除外）都要 Read 进上下文，派发 subagent 时整段拷贝到其 prompt，冲突按 `priority` 排序
 
 ---
 
