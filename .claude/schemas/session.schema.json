@@ -118,6 +118,11 @@
           "type": "array",
           "items": { "type": "string" }
         },
+        "parallelWidth": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Average subagent fan-out width per parallel dispatch batch in this phase. 0 means no parallel dispatch occurred (single-feature or FORGE_NO_PARALLEL=1)."
+        },
         "planPath": {
           "type": "string",
           "description": "Path to phase plan.json (see plan.schema.json)"

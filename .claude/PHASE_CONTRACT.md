@@ -36,7 +36,8 @@
 │
 ├── prototype/
 │   ├── stories-manifest.md            # /dev-proto 输出，列出生成的 stories
-│   └── enhancers-manifest.md          # 本轮启用的 proto enhancers
+│   ├── enhancers-manifest.md          # 本轮启用的 proto enhancers
+│   └── subagent-receipts/<id>.json    # ★ Step 2.5 fan-out 每个 proto-feature-builder 的 receipt
 │
 ├── dev/
 │   ├── plan.json                      # ★ dev-dev Plan 模式产物（Act 模式合同）
@@ -63,7 +64,8 @@
 │   ├── checklist.md                   # /dev-deploy 部署报告
 │   └── smoke-result.json              # ★ 部署后 Playwright 冒烟结果
 │
-├── .worktrees/<subagent-id>/          # ★ subagent 沙箱（临时；merge 或 drop 后清理）
+├── .worktrees/<subagent-id>/          # ★ dev-dev subagent 沙箱（临时；merge 或 drop 后清理）
+│                                      #   注意：dev-proto 的 proto-feature-builder 不使用 worktree
 │
 └── archive/                           # 完成的 Loop 归档
     └── YYYY-MM-DD-<feature>/
@@ -90,13 +92,15 @@
       "startedAt": "<ISO>",
       "completedAt": "<ISO>",
       "feedbackRounds": 0,
-      "enhancers": []                    // ★ 本轮启用的 .claude/enhancers/proto/*.md 的 name 列表
+      "enhancers": [],                   // ★ 本轮启用的 .claude/enhancers/proto/*.md 的 name 列表
+      "parallelWidth": 3                 // ★ 本轮 Step 2.5 fan-out 平均并行宽度（0 = 未并行/降级）
     },
     "dev": {
       "status": "pending" | "in_progress" | "completed",
       "startedAt": "<ISO>",
       "completedAt": "<ISO>",
-      "enhancers": []                    // ★ 本轮启用的 .claude/enhancers/dev/*.md 的 name 列表
+      "enhancers": [],                   // ★ 本轮启用的 .claude/enhancers/dev/*.md 的 name 列表
+      "parallelWidth": 3                 // ★ dev-dev Step 2 各 batch 平均并行宽度（0 = 全部串行）
     },
     "deploy": {
       "status": "pending" | "in_progress" | "completed",
@@ -242,12 +246,14 @@
 7. **冷启动部署需警告** — 没跑过原型直接部署，写一行警告到 `.loop/deploy/checklist.md`
 8. **增强能力包采用两段式加载** — 三个主 skill Step 0 先用 `node scripts/lib/enhancers.mjs list <phase>` 只扫描 frontmatter，按需求关键词配合 `appliesTo` 过滤后再 Read 选中的；启用清单通过 `enhancers manifest` 落盘到 `.loop/<phase>/enhancers-manifest.md` 并写入 `session.json.phases.<phase>.enhancers`
 9. **`.loop/events.jsonl` append-only** — 每个 phase 进出、每个 step 边界、每次 subagent 派发、AskUserQuestion、checkpoint、self-check 结果都必须写 event。不允许覆盖或删除历史 event（回滚走 `forge-events rollback` 归档到 `events-archive/`）
-10. **subagent 必须落 receipt** — dev-dev 派发的每个 subagent 完成时必须写 `.loop/dev/subagent-receipts/<id>.json`（schema：`subagent-receipt`）；主 skill 未收到有效 receipt 即视为失败并触发重试
-11. **step / subagent / retry 有预算上限** — 由 `forge-budget check <phase>` 强制；触顶必须 AskUserQuestion 而非死循环。默认预算：proto(50 steps / 5 subagents)、dev(100/30/3 retries per checkpoint)、deploy(30/5/2)
+10. **subagent 必须落 receipt** — dev-dev 派发的每个 subagent 完成时必须写 `.loop/dev/subagent-receipts/<id>.json`（schema：`subagent-receipt`）；dev-proto Step 2.5 fan-out 的每个 proto-feature-builder 落盘到 `.loop/prototype/subagent-receipts/<id>.json`（同 schema）；主 skill 未收到有效 receipt 即视为失败并触发重试
+11. **step / subagent / retry 有预算上限** — 由 `forge-budget check <phase>` 强制；触顶必须 AskUserQuestion 而非死循环。默认预算：proto(50 steps / **8 subagents**)、dev(100/30/3 retries per checkpoint)、deploy(30/5/2)。proto 预算按 3-5 features 场景 + 若干失败重试估算；若单 loop 有 6+ features，AskUserQuestion 提示加预算或分批。
 12. **dev-dev Plan/Act 显式分离** — Step 1 是纯 plan 模式（read-only role plan-analyst），输出 `.loop/dev/plan.json` → AskUserQuestion 批准；Step 2+ 是 act 模式，subagent 只能改 plan.tasks[].filesPlanned 里的文件，多改的进 deviations
-13. **subagent 强制在 worktree 中运行** — dev-dev Step 2 每个派发前 `forge-worktree create --subagent <id>`，subagent 完成后主 skill validate patches + receipt，通过 → `forge-worktree merge`，失败 → `forge-worktree drop`
+13. **subagent worktree 规则分阶段** — **dev-dev** Step 2 每个派发前 `forge-worktree create --subagent <id>`，subagent 完成后主 skill validate patches + receipt，通过 → `forge-worktree merge`，失败 → `forge-worktree drop`。**dev-proto** Step 2.5 并行派发的 `proto-feature-builder` **不使用 worktree** —— 文件按 feature 天然分离（`mocks/handlers/<feature>.ts` / `src/stories/<project>/<feature>.*`），主 skill 通过 receipt.filesWritten 的 disjoint-set 校验 + blocklist 校验保证隔离；冲突即判 `subagent.failed`。
 14. **checkpoint commit 必须打 git tag** — 格式 `loop-<loopId>-cp-<n>`，同时写 `checkpoint.created` event + append 到 `session.json.checkpoints[]`。`/dev-undo` 消费这份记录
 15. **审批 mode 由 forge-mode gate 拦截** — session.json.mode 决定 hook 行为（suggest/auto-edit/full-auto）；prod 部署 / 强制 push / `rm -rf` 等一律 ask，无论 mode
+16. **dev-proto 并行 fan-out 由主 skill 独占 barrel/manifest** — Step 2.5 gather 阶段，`mocks/handlers/index.ts`、`.loop/prototype/stories-manifest.md`、`.loop/api-contracts.json` 均由主 skill 写入，subagent 触碰任一即失败。这条与 rule 13 的 disjoint-set 校验配套。
+17. **plan-analyst 拆解粒度以 (feature × layer) 为一格** — dev-dev Step 1 产出的 `.loop/dev/plan.json` 里，同一 feature 的不同 layer（infra/api/feature-lib/views）必须拆成独立 task，`tasks[].dependencies` 只声明真正的文件级依赖，不写保守的"按顺序"依赖。目标并行宽度 ≥ 3；若拆完仍 < 3，plan-analyst 把最大 task 再细分。dev-dev Step 2 从 dependencies 拓扑分组算 batches。
 
 ---
 
@@ -271,6 +277,7 @@
 4. **写 session.json 用 read → modify → write 模式** — 不要覆盖整个文件，保留其他 phase 的字段
 5. **产物文件路径写到 `artifacts`** — 让下游 phase 通过 session.json 找到，不要硬编码路径
 6. **完成时写入 `phases.<phase>.enhancers`** — 列出本轮启用的增强 skill `name`（来自 Step 0 扫描结果）
+7. **完成时写入 `phases.<phase>.parallelWidth`** — 记录本轮实际并行宽度（proto Step 2.5 / dev Step 2 batches 平均）。降级为串行时写 0。
 
 如果你在加新的独立 skill（类似 `/dev-prd`）：
 
@@ -290,6 +297,7 @@
 | subagent 完成但没有 receipt | subagent prompt 未包含 receipt 要求 或 subagent 崩溃 | 主 skill 视为 subagent.failed，触发 D1 重试逻辑；查 `.loop/events.jsonl` 定位失败原因 |
 | budget.exceeded 后 skill 死循环 | budget CLI 未被主 skill 调用 | 检查 skill Step 是否插入 `forge-budget check <phase>`；exit code 2 应触发 AskUserQuestion |
 | `--resume` 卡在错误 step | events.jsonl 缺 step.exit 事件 | `forge-events resume-hint` 找出 in-flight step，若不对可手动 append step.exit event |
+| dev-proto Step 2.5 fan-out subagent 触碰了 blocklist 文件 | 主 skill gather disjoint-set 校验捕获 | 记 `subagent.failed`，串行重跑该 feature（或降级到 Step 3+4 单线程） |
 
 ---
 
@@ -303,12 +311,12 @@
 | `forge-events` | `events.jsonl` 事件日志 | append / tail / query / rollup / rollback / resume-hint |
 | `forge-budget` | phase step/subagent/retry 预算 | check / consume / set / reset |
 | `forge-patch` | Aider SEARCH-REPLACE 补丁 | parse / validate / apply / reject |
-| `forge-worktree` | subagent git worktree 沙箱 | create / list / path / merge / drop |
+| `forge-worktree` | subagent git worktree 沙箱（仅 dev-dev） | create / list / path / merge / drop |
 | `forge-repomap` | 生成仓库符号地图（subagent context） | build / show |
 | `forge-metrics` | 从 events.jsonl 计算 phase 指标 | compute / show / rollup |
 | `forge-mode` | 三档审批（hooks 调用） | get / set / gate / classify |
 | `enhancers` | 两段式增强 skill 加载 | list / select / manifest |
 
 **Schema 位置**：`.claude/schemas/`（session / api-contracts / task-state / event / subagent-receipt / plan / subagent-role / phase-metrics）
-**Role 定义**：`.claude/roles/`（feature-impl / api-route / shared-primitive / page-integration / plan-analyst）
+**Role 定义**：`.claude/roles/`（feature-impl / api-route / shared-primitive / page-integration / plan-analyst / proto-feature-builder）
 **Hooks**：`.claude/settings.json` PostToolUse（session.json 写入校验）+ PreToolUse（Bash 高危拦截 gate）

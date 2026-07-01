@@ -24,6 +24,9 @@
   ],
   "promptInjections": [
     "You are in read-only PLAN MODE. You MUST NOT use Write/Edit. Any file mutation is a hard violation.",
-    "Your output is .loop/dev/plan.json — nothing else. If you notice bugs in existing code, log them as notes in the plan; do not fix them here."
+    "Your output is .loop/dev/plan.json — nothing else. If you notice bugs in existing code, log them as notes in the plan; do not fix them here.",
+    "任务拆解粒度：以 (feature × layer) 为一格。同一 feature 的不同 layer（infra/api/feature-lib/views）拆成独立 task；同一 layer 里不同 feature 也拆成独立 task。目标最大并行宽度 ≥ 3；若拆完仍 < 3，把最大 task 再细分（例如 API 层按 endpoint 拆，views 按页面拆）。",
+    "tasks[].dependencies 必须精确 —— 只声明真正的文件级依赖（如 T005 的 API route 依赖 T001 的 Zod validator）。禁止写 '按顺序执行' / '等前面都完' 这种保守依赖。主 skill 会根据 dependencies 拓扑分组算 batches：dependencies 越松，并行度越高，wall-clock 越短。",
+    "在 plan.json 顶部的 dependencyGraph 字段里，用人类可读格式列出预期的 batch 划分（e.g. 'batch-1: [T001, T005] → batch-2: [T002, T003, T006] → batch-3: [T004, T007]'）—— 便于用户 review 时判断粒度是否合理。"
   ]
 }

@@ -262,7 +262,7 @@ echo '{"phases":{"prototype":{"enhancers":["<name1>","<name2>"]}}}' \
 # 1. 写 phase.enter（events.jsonl 若不存在会自动创建）
 node scripts/lib/forge-events.mjs append --kind phase.enter --phase prototype --step step.0
 
-# 2. 检查 phase 预算（默认 50 steps / 5 subagents）
+# 2. 检查 phase 预算（默认 50 steps / 8 subagents —— 覆盖 3-5 features 并行 + 若干重试）
 node scripts/lib/forge-budget.mjs check prototype
 # exit 0 = OK, 2 = 触顶 → AskUserQuestion「加预算 / 中断 / 接受当前进度」, 3 = 80% warn
 ```
@@ -397,9 +397,210 @@ MSW Handlers：
 - **调整计划**：修改组件清单或交互流程
 - **只做部分**：选择要生成的组件子集
 
+**Features 分组**（Step 2.5 并行 fan-out 的输入）：
+
+在 AskUserQuestion 之前，把组件清单**按 feature 归组**并明示每 feature 的三件套目标文件路径：
+
+```
+📦 Features 分组（用于并行 fan-out）
+──────────────────────────────
+
+feature: auth
+  handlers:  mocks/handlers/auth.ts
+  fixtures:  mocks/fixtures/auth.ts
+  stories:   src/stories/<project>/auth.stories.tsx
+  fixtures:  src/stories/<project>/auth.fixtures.ts
+  endpoints: POST /api/auth/login, POST /api/auth/logout
+
+feature: user-list
+  handlers:  mocks/handlers/user-list.ts
+  fixtures:  mocks/fixtures/user-list.ts
+  stories:   src/stories/<project>/user-list.stories.tsx
+  fixtures:  src/stories/<project>/user-list.fixtures.ts
+  endpoints: GET /api/users, DELETE /api/users/:id
+
+feature: user-detail
+  ...
+
+并行策略：features ≥ 2 且未设 FORGE_NO_PARALLEL=1 → Step 2.5 并行派发 <N> 个 proto-feature-builder
+                                        否则 → 走 Step 3+4 串行分支
+```
+
+> Feature 命名建议：latin-slug（kebab-case），与 story title 里的中文显示名解耦。同一 feature 的所有文件必须共享 slug。
+
+---
+
+### Step 2.5：并行派发 feature builders（fan-out 阶段）
+
+**触发条件**：Step 2 分组产出的 features 数量 ≥ 2，且未设 `FORGE_NO_PARALLEL=1`。否则跳过本步，直接进入 Step 3+4 单线程分支。
+
+**目标**：主 skill 一条消息里并行派发 N 个 `proto-feature-builder` role subagent，每个 subagent 负责一个 feature 的三件套（handlers + fixtures + stories）。**不使用 worktree**（文件按 feature 天然分离），主 skill 通过 disjoint-set 校验保证隔离。
+
+#### Step 2.5.1：派发前置
+
+```bash
+# 1. 确保 .loop/api-contracts.json 已在 Step 1 落盘（subagent 唯一的跨 feature 契约源）
+node scripts/lib/forge-state.mjs validate .loop/api-contracts.json --schema api-contracts
+
+# 2. 确保 receipts 目录存在
+mkdir -p .loop/prototype/subagent-receipts
+
+# 3. Read role 定义（拷贝到每个 subagent prompt）
+cat .claude/roles/proto-feature-builder.json
+```
+
+对每个 feature，在派发前写 `subagent.spawn` event（**不新增 event kind**，用 payload.batch 编码同批次）：
+
+```bash
+node scripts/lib/forge-events.mjs append --kind subagent.spawn --phase prototype --step step.2.5 \
+  --payload '{"id":"pfb-<feature-slug>","role":"proto-feature-builder","batch":"proto-fan-1","feature":"<feature-slug>"}'
+node scripts/lib/forge-budget.mjs consume prototype --kind subagent
+```
+
+预算够（8 subagents）覆盖典型 3-5 features + 少量重试。超预算 → `AskUserQuestion` 提示加预算或降级到串行。
+
+#### Step 2.5.2：并行派发（一条消息里 N 个 Agent 调用）
+
+**关键**：这 N 个 `Agent` 工具调用必须放在**同一条 assistant 消息里**，harness 才会真正并发执行。
+
+每个 subagent prompt 必须包含：
+
+1. **该 feature 的名称**（slug）+ 目标文件路径列表
+2. **`.loop/api-contracts.json` 里对应 endpoints 的切片**（只该 feature 的，不要全量）
+3. **项目 slug** + 主题 scope 类名（`theme-<project>`）
+4. **Step 0 启用的 enhancer 全文**（当前 `frontend-design.md` + `shadcn-form-patterns.md`，均 < 10KB）
+5. **`.claude/roles/proto-feature-builder.json` 的 `promptInjections` 全文**（工具约束）
+6. **本 skill 的关键约定**：三层架构、fixtures 分离、cn()、min-w-0、oklch 主题、story title 格式
+7. **Receipt 要求**：完成前写 `.loop/prototype/subagent-receipts/pfb-<feature>.json`（schema: `subagent-receipt`），`filesWritten` 必须列出所有写入的文件
+
+Subagent prompt 模板（伪代码，实际派发时逐条填充）：
+
+```
+你是一个 proto-feature-builder subagent，本次负责 feature="<slug>"。
+
+===== 工具约束（来自 .claude/roles/proto-feature-builder.json）=====
+<拷贝 role.promptInjections 每一条>
+
+===== API 契约（来自 .loop/api-contracts.json 的相关切片）=====
+<只该 feature 的 endpoints，JSON 片段>
+
+===== 需要产出的文件 =====
+1. mocks/handlers/<slug>.ts              — MSW handlers
+2. mocks/fixtures/<slug>.ts              — mock 数据常量（5-8 条 + 1 边界场景）
+3. src/stories/<project>/<slug>.stories.tsx    — Storybook story
+4. src/stories/<project>/<slug>.fixtures.ts    — story 展示常量（品牌名等）
+
+===== 项目约定 =====
+- 项目 slug: <project>
+- 主题 scope: `<div className="theme-<project> ...">` 包裹 showcase
+- Story title 格式: `'<project> / <中文显示名>'`
+- 响应信封: {status_code, data, message?}
+- className: cn() 合并；min-w-0 + minmax(0,1fr) 响应式；oklch 色值
+
+===== 增强能力包（Step 0 启用）=====
+<拷贝 enhancer 全文，每个 < 10KB>
+
+===== Receipt =====
+完成前调用：
+  cat <<'JSON' | node scripts/lib/forge-state.mjs write .loop/prototype/subagent-receipts/pfb-<slug>.json --schema subagent-receipt
+  {
+    "id": "pfb-<slug>",
+    "role": "proto-feature-builder",
+    "status": "success",
+    "filesWritten": ["mocks/handlers/<slug>.ts", "mocks/fixtures/<slug>.ts", ...],
+    "summary": "生成 <slug> feature 的 handlers + fixtures + stories，共 <N> 个 endpoints、<M> 条 mock 数据"
+  }
+  JSON
+
+绝不触碰 blocklist（详见工具约束 promptInjections 第 2 条）。
+```
+
+**降级路径**：如果本地环境或用户设置 `FORGE_NO_PARALLEL=1`，跳过并行派发，走原 Step 3+4 串行流程。此时不消耗 subagent 预算。
+
+#### Step 2.5.3：Gather + 校验（关键红线）
+
+所有 subagent 返回后，主 skill 执行：
+
+```bash
+# 1. 校验每份 receipt（schema）
+for id in $(ls .loop/prototype/subagent-receipts/pfb-*.json | xargs -n1 basename | sed 's/.json//'); do
+  node scripts/lib/forge-state.mjs validate ".loop/prototype/subagent-receipts/${id}.json" --schema subagent-receipt || echo "FAIL: $id"
+done
+
+# 2. Disjoint-set 校验 —— 每份 receipt.filesWritten 合并后不能有交集
+# 3. Blocklist 校验 —— filesWritten 里不能出现:
+#    - mocks/handlers/index.ts
+#    - mocks/fixtures/index.ts
+#    - .loop/api-contracts.json
+#    - src/stories/<project>/_shared/**
+#    - .storybook/**
+#    - src/app/**
+#    - src/components/ui/**
+```
+
+用 jq 一次性做 disjoint-set + blocklist 检查：
+
+```bash
+BLOCKLIST='mocks/handlers/index.ts mocks/fixtures/index.ts .loop/api-contracts.json'
+ALL_FILES=$(jq -s '[.[] | .filesWritten[]]' .loop/prototype/subagent-receipts/pfb-*.json)
+
+# 检查重复（disjoint 违规）
+echo "$ALL_FILES" | jq -r '.[]' | sort | uniq -d | while read dup; do
+  echo "❌ Disjoint violation: $dup written by multiple subagents"
+done
+
+# 检查 blocklist
+for bad in $BLOCKLIST; do
+  echo "$ALL_FILES" | jq -e --arg b "$bad" 'index($b) != null' > /dev/null && \
+    echo "❌ Blocklist violation: $bad"
+done
+
+# 额外：正则 blocklist
+echo "$ALL_FILES" | jq -r '.[]' | grep -E '(_shared/|\.storybook/|src/app/|src/components/ui/)' && \
+  echo "❌ Blocklist regex violation"
+```
+
+**任一违规**：
+1. 记 `subagent.failed` event，payload 包含违规 subagent id + 违规文件
+2. 该 feature 视为失败，走**降级**：主 skill 自己接手 Step 3+4 串行分支为该 feature 补做
+3. 若整批多个失败 → `AskUserQuestion` 让用户选择「全部串行重跑 / 只重跑失败的 / 中断」
+
+**全部通过**后：
+
+```bash
+# 4. 主 skill 独占写入 barrel（subagent 不允许写这个文件）
+# 从每份 receipt 的 filesWritten 提取 handler 文件，生成 index.ts
+cat > mocks/handlers/index.ts <<EOF
+import { authHandlers } from './auth'
+import { userListHandlers } from './user-list'
+// ... 每 feature 一行 import
+export const handlers = [
+  ...authHandlers,
+  ...userListHandlers,
+  // ...
+]
+EOF
+
+# 5. 主 skill 独占写入 stories-manifest.md（Step 6 的产物）
+# 见下方 Step 6 模板；本步只是提前把 fan-out 结果聚合进去
+
+# 6. 写 subagent.return event（每个成功的 subagent 一条）
+for id in ...; do
+  node scripts/lib/forge-events.mjs append --kind subagent.return --phase prototype --step step.2.5 \
+    --payload "{\"id\":\"${id}\",\"status\":\"success\",\"batch\":\"proto-fan-1\"}"
+done
+
+# 7. 记录本轮 parallelWidth（gather 完成时算平均，只有一批的话就是 batch 大小）
+# Step 10 更新 session.json 时写入 phases.prototype.parallelWidth
+```
+
+**并行完成后**：Step 3、Step 4 的文件生成工作已经在 subagent 里完成，主 skill **跳过 Step 3、Step 4 的代码生成**，直接进入 Step 5（Storybook 配置验证）和 Step 6（输出 manifest）。
+
 ---
 
 ### Step 3：生成 MSW Handlers
+
+> **降级分支**：若 Step 2.5 已完成并行 fan-out（features ≥ 2 且未设 `FORGE_NO_PARALLEL=1`），handlers 已由各 subagent 产出，**跳过本步**（但 barrel `mocks/handlers/index.ts` 由主 skill 在 Step 2.5.3 gather 阶段独占写入）。仅当 features 只有 1 个 或用户显式 `FORGE_NO_PARALLEL=1` 或 Step 2.5 整批失败降级 时走本串行分支。
 
 基于 **`.loop/api-contracts.json`** 的 `endpoints[]` 生成 MSW handlers（如不存在则从 PRD Section 7 降级解析）。
 
@@ -536,6 +737,8 @@ export const handlers = [
 ---
 
 ### Step 4：生成 Storybook Stories
+
+> **降级分支**：同 Step 3 —— 若 Step 2.5 已完成并行 fan-out，stories 已由 subagent 产出，**跳过本步**。仅串行分支或 Step 2.5 整批降级 时执行。
 
 **目录结构**（三层架构，参见「原型约定」）：
 
@@ -938,6 +1141,70 @@ Storybook 地址：http://localhost:6006
 
 ---
 
+### Step 9.5：产出可分享的静态原型
+
+用户确认定稿后，构建一份**可脱离 Storybook dev server 运行**的静态产物，方便分享/回看：
+
+```bash
+# 输出到 .loop/prototype/static/，避免污染项目根
+npm run build-storybook -- -o .loop/prototype/static
+```
+
+产物是一个静态站点，包含所有 stories + 打包好的 MSW worker。由于 Service Worker 不能在 `file://` 下注册（MSW 拦截会失效），必须用本地 HTTP server 打开。**同时写一份 `.loop/prototype/static/README.md`**，把启动方式和注意事项写清楚：
+
+````markdown
+# 原型静态产物
+
+> 生成时间：<ISO timestamp>
+> 项目 slug：<project-slug>
+> 标注迭代：<N> 轮
+
+## 打开方式
+
+**推荐**（保留完整 MSW mock 交互）：
+
+```bash
+cd .loop/prototype/static
+npx serve .
+# 浏览器打开提示的地址（通常是 http://localhost:3000）
+```
+
+或用任意本地 HTTP server：`python3 -m http.server 8000` / `npx http-server`。
+
+## 为什么不能双击打开 index.html
+
+MSW 用 Service Worker 拦截 API 请求，Service Worker **只能在 http/https 协议下注册**，`file://` 会导致 mock 失效——页面能渲染但登录/列表等接口调用会 404。
+
+## Stories 入口
+
+- 顶层：`/index.html`
+- 单个 story 深链：`/index.html?path=/story/<project-slug>-<feature>--v1`
+
+## 想改怎么办
+
+这是**只读快照**。要修改请回到项目根，编辑 `src/stories/<project-slug>/*.stories.tsx`，然后：
+
+```bash
+npm run storybook                      # 本地开发
+npm run build-storybook -- -o .loop/prototype/static  # 重新出静态包
+```
+````
+
+构建失败时的处理：
+
+- Storybook 构建报错 → 定位报错的 story 文件，修复后重试；不要跳过本步
+- 磁盘空间不足 / 超时 → 告知用户构建耗时和产物大小（典型 30-80MB），询问是否继续
+- 用户不需要静态产物 → `AskUserQuestion` 允许跳过，Step 10 的 `artifacts.staticPrototype` 记为 `null`
+
+完成后写 `note` event：
+
+```bash
+node scripts/lib/forge-events.mjs append --kind note --phase prototype --step step.9.5 \
+  --payload '{"action":"build-storybook","output":".loop/prototype/static"}'
+```
+
+---
+
 ### Step 10：更新 session.json
 
 确认通过后，更新 `.loop/session.json`：
@@ -950,19 +1217,22 @@ Storybook 地址：http://localhost:6006
       "status": "completed",
       "completedAt": "<ISO timestamp>",
       "feedbackRounds": <N>,
-      "enhancers": ["shadcn-form-patterns", "..."]
+      "enhancers": ["shadcn-form-patterns", "..."],
+      "parallelWidth": <N>
     }
   },
   "artifacts": {
     "acceptanceChecklist": ".loop/acceptance-checklist.md",
     "storiesManifest": ".loop/prototype/stories-manifest.md",
     "apiContracts": ".loop/api-contracts.json",
-    "prd": ".loop/prd.md"
+    "prd": ".loop/prd.md",
+    "staticPrototype": ".loop/prototype/static"
   }
 }
 ```
 
-> `phases.prototype.enhancers` 记录本轮启用的增强 skill `name` 列表（来自 Step 0 扫描结果，不含 `_` 开头的占位文件）。下游 phase 不依赖此字段，仅供审计/排查。
+> `phases.prototype.enhancers` 记录本轮启用的增强 skill `name` 列表（来自 Step 0 扫描结果，不含 `_` 开头的占位文件）。
+> `phases.prototype.parallelWidth` 记录 Step 2.5 fan-out 的实际并行宽度（batch 内 subagent 数量）。单 feature 或 `FORGE_NO_PARALLEL=1` 降级到串行时写 `0`。下游 phase 不依赖此字段，仅供审计/排查/性能观测。
 
 ---
 
@@ -984,6 +1254,10 @@ Storybook 地址：http://localhost:6006
 14. **标注引发的契约变更必须同步** — 改 fixtures 时同步改 `.loop/api-contracts.json` 和 handler，避免三者漂移
 15. **布局禁止固定 px 列宽与 100vh 计算** — 详见「布局自适应规范」。多栏页面必须用 `minmax(0,1fr)` + 响应式断点；高度用 `min-h-screen` 或 `100dvh`，不用 `calc(100vh-...)`
 16. **必须加载并遵守 `.claude/enhancers/proto/*.md`** — Step 0 扫描的所有增强 skill（`_` 开头的占位除外）都要 Read 进上下文，后续每一步生成代码前回顾，冲突按 `priority` 排序
+17. **Step 2.5 gather 阶段必须做 disjoint-set + blocklist 校验** — 任何 subagent 写了不该写的文件（重复写 / blocklist 命中）视为失败，走降级路径（主 skill 串行重跑该 feature），不静默接受
+18. **`mocks/handlers/index.ts` / `mocks/fixtures/index.ts` / `.loop/api-contracts.json` / `_shared/**` / `.storybook/**` / `src/app/**` / `src/components/ui/**` 只由主 skill 写** — Step 2.5 派发的 subagent 触碰任一即判失败
+19. **Step 2.5 不使用 worktree** — 与 dev-dev 不同，proto-feature-builder 直接在主 worktree 写文件；隔离靠 disjoint-set + blocklist 校验，不靠 git 沙箱（详见 `PHASE_CONTRACT.md` §6 rule 13）
+20. **定稿后必须产出静态原型包** — Step 9.5 执行 `npm run build-storybook -- -o .loop/prototype/static` + 写 README；构建失败不允许跳过（除非用户显式说不需要）。README 必须写清「不能双击 file:// 打开，需用 `npx serve`」的原因
 
 ---
 

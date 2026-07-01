@@ -503,7 +503,49 @@ JSON
 
 按依赖图，使用 `TaskCreate` 创建任务，然后并行派发 subagent。
 
-**每个任务派发前**（更新 task-state 为 `in_progress`）：
+#### Step 2.0：从 plan.json 拓扑分组算 batches
+
+主 skill 读 `.loop/dev/plan.json`，按 `tasks[].dependencies` 做 Kahn 拓扑排序，把无依赖 / 依赖已满足的 task 归入同一 batch，同 batch 内并行、batch 间串行。
+
+参考实现（无需新增 CLI）：
+
+```bash
+# 从 plan.json 计算 batches，输出 JSON 数组：[["T001","T005"],["T002","T003","T006"],["T004","T007"]]
+node -e '
+const plan = JSON.parse(require("fs").readFileSync(".loop/dev/plan.json", "utf8"));
+const tasks = plan.tasks;
+const doneSet = new Set();
+const batches = [];
+const pending = new Set(tasks.map(t => t.id));
+while (pending.size) {
+  const batch = [];
+  for (const t of tasks) {
+    if (!pending.has(t.id)) continue;
+    const deps = t.dependencies || [];
+    if (deps.every(d => doneSet.has(d))) batch.push(t.id);
+  }
+  if (!batch.length) {
+    console.error("cyclic deps or unresolved dependency; pending:", [...pending]);
+    process.exit(1);
+  }
+  batches.push(batch);
+  batch.forEach(id => { doneSet.add(id); pending.delete(id); });
+}
+console.log(JSON.stringify(batches));
+' > .loop/dev/batches.json
+
+# 检查最大并行宽度
+jq "map(length) | max" .loop/dev/batches.json
+```
+
+**并行规则**：
+
+- **同一 batch 里的所有 tasks 必须在同一条消息里并行派发 Agent 调用** —— 这是红线 3 的具体化，是本 skill 提速的关键
+- Batch 与 batch 之间等前一批全部返回 + gather 校验完成后才进入下一批
+- 每个 batch 派发前写一条 aggregate event 便于 metrics 聚合
+- 若某 batch 宽度 = 1，主 skill 不 fan-out，直接串行，但记录 `parallelWidth` 时计 1；Step 4 收敛时算所有 batch 的平均宽度，写入 `session.json.phases.dev.parallelWidth`
+
+#### Step 2.1：每个任务派发前
 
 ```bash
 node scripts/lib/forge-state.mjs set .loop/dev/task-state.json --schema task-state \
@@ -521,10 +563,7 @@ node scripts/lib/forge-state.mjs set .loop/dev/task-state.json --schema task-sta
 | 前端组件 | `general-purpose` | 基于原型 Stories 实现真实组件 |
 | 页面集成 | `general-purpose` | 路由 + 组件串联 + 错误边界 |
 
-**并行规则**：
-
-- 无依赖的任务在同一条消息里并行派发
-- 有依赖的任务等前置完成后串行执行
+> 并行规则见 Step 2.0 —— 按 `batches.json` 逐批 fan-out，同一 batch 一条消息里并行派发。
 
 **每个 subagent 的 prompt 必须包含**：
 1. 项目技术栈（Next.js App Router + shadcn/ui + TypeScript）
@@ -812,7 +851,8 @@ Commits：<N> 次
     "dev": {
       "status": "completed",
       "completedAt": "<ISO timestamp>",
-      "enhancers": ["react-query-patterns", "..."]
+      "enhancers": ["react-query-patterns", "..."],
+      "parallelWidth": <N>
     }
   },
   "artifacts": {
@@ -828,6 +868,7 @@ Commits：<N> 次
 ```
 
 > `phases.dev.enhancers` 记录本轮启用的增强 skill `name` 列表（来自 Step 0 扫描结果，不含 `_` 开头的占位文件）。
+> `phases.dev.parallelWidth` 记录 Step 2 各 batch 的平均并行宽度（用 `.loop/dev/batches.json` 里各 batch 长度取算术平均，向下取整）。全部串行时写 `1`；若 plan.json 拆分不够细导致最大 batch = 1，会体现在这个字段上，便于回顾时判断 plan-analyst 是否需要再收紧粒度。计算示例：`jq '[.[] | length] | add / length | floor' .loop/dev/batches.json`
 
 **Metrics 聚合 + phase.exit event**：
 
