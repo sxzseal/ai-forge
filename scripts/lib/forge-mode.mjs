@@ -47,6 +47,24 @@ const DEPLOY_PROD_PATTERNS = [
   /\bwrangler\s+deploy\s+--env\s+production\b/,
 ];
 
+// Best-effort recovery of the *effective* command from a wrapper like
+// `bash -c "..."`, `sh -c '...'`, `/usr/bin/env bash -c $'...'`, etc. Keeps the
+// outer command too, so patterns can still match if wrapping is absent.
+// Not a shell parser — just widens the surface classify() checks so a
+// `bash -c "vercel --prod"` isn't a silent free pass.
+function unwrapCommand(cmd) {
+  if (typeof cmd !== 'string' || !cmd) return '';
+  const parts = [cmd];
+  // Match: (bash|sh|zsh|env ... bash|sh) -c "..."  |  '...'  |  $'...'
+  const re = /\b(?:bash|sh|zsh|dash|ksh)\s+(?:-l\s+|-i\s+)*-c\s+(\$?'([^']*)'|"((?:[^"\\]|\\.)*)")/g;
+  let m;
+  while ((m = re.exec(cmd)) !== null) {
+    const inner = m[2] ?? m[3] ?? '';
+    if (inner) parts.push(inner);
+  }
+  return parts.join(' ; ');
+}
+
 function sessionPath() {
   return join(findLoopDir(), 'session.json');
 }
@@ -61,7 +79,7 @@ function classify(tool, command) {
     return 'edit';
   }
   if (tool === 'Bash') {
-    const cmd = command || '';
+    const cmd = unwrapCommand(command || '');
     if (DEPLOY_PROD_PATTERNS.some((r) => r.test(cmd))) return 'deploy';
     if (DANGER_PATTERNS.some((r) => r.test(cmd))) return 'danger';
     return 'normal';

@@ -104,11 +104,28 @@ export function ensureDir(dir) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
+// Parse JSON safely — returns { ok, value, error }. Never throws.
+export function safeJsonParse(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return { ok: false, value: null, error: 'empty input' };
+  }
+  try {
+    return { ok: true, value: JSON.parse(raw) };
+  } catch (e) {
+    return { ok: false, value: null, error: e.message };
+  }
+}
+
 export function readJsonOrNull(path) {
   if (!existsSync(path)) return null;
-  const raw = readFileSync(path, 'utf8');
-  if (!raw.trim()) return null;
-  return JSON.parse(raw);
+  let raw;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+  const r = safeJsonParse(raw);
+  return r.ok ? r.value : null;
 }
 
 export function readLinesOrEmpty(path) {
@@ -142,34 +159,66 @@ function lockPath(targetPath) {
   return targetPath + '.lock';
 }
 
+// Sync sleep without CPU burn. Atomics.wait blocks the thread cleanly
+// for the given ms; falls back to a bounded busy-wait if unavailable
+// (older/embedded runtimes).
+const _sleepBuf = (() => {
+  try {
+    return new Int32Array(new SharedArrayBuffer(4));
+  } catch {
+    return null;
+  }
+})();
+
+function syncSleep(ms) {
+  if (_sleepBuf) {
+    Atomics.wait(_sleepBuf, 0, 0, ms);
+    return;
+  }
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    /* fallback busy-wait */
+  }
+}
+
 export function acquireLock(targetPath) {
   const lp = lockPath(targetPath);
+  ensureDir(dirname(lp));
   for (let i = 0; i < 100; i++) {
-    if (!existsSync(lp)) {
-      try {
-        ensureDir(dirname(lp));
-        writeFileSync(lp, JSON.stringify({ pid: process.pid, ts: Date.now() }));
-        return true;
-      } catch {
-        // race — retry
-        continue;
-      }
-    }
     try {
-      const raw = JSON.parse(readFileSync(lp, 'utf8'));
-      if (Date.now() - raw.ts > LOCK_STALE_MS) {
-        unlinkSync(lp);
+      // Atomic create-or-fail — no TOCTOU window vs existsSync + write.
+      writeFileSync(lp, JSON.stringify({ pid: process.pid, ts: Date.now() }), {
+        flag: 'wx',
+      });
+      return true;
+    } catch (e) {
+      if (e && e.code !== 'EEXIST') {
+        // Some other IO error — surface it.
+        throw new Error(`lock write failed on ${lp}: ${e.message}`);
+      }
+      // Lock exists — check staleness.
+      let raw;
+      try {
+        raw = readFileSync(lp, 'utf8');
+      } catch {
+        // Vanished between EEXIST and read — retry immediately.
         continue;
       }
-    } catch {
-      try {
-        unlinkSync(lp);
-      } catch {}
-      continue;
-    }
-    const end = Date.now() + 50;
-    while (Date.now() < end) {
-      /* short spin */
+      const parsed = safeJsonParse(raw);
+      if (!parsed.ok || typeof parsed.value?.ts !== 'number') {
+        // Corrupt lock — remove and retry.
+        try {
+          unlinkSync(lp);
+        } catch {}
+        continue;
+      }
+      if (Date.now() - parsed.value.ts > LOCK_STALE_MS) {
+        try {
+          unlinkSync(lp);
+        } catch {}
+        continue;
+      }
+      syncSleep(50);
     }
   }
   throw new Error(`could not acquire lock on ${targetPath} (held > ${LOCK_STALE_MS}ms)`);
@@ -211,7 +260,9 @@ export function loadSchema(name) {
   const dir = findSchemaDir();
   const p = join(dir, `${name}.schema.json`);
   if (!existsSync(p)) throw new Error(`schema not found: ${p}`);
-  return JSON.parse(readFileSync(p, 'utf8'));
+  const parsed = safeJsonParse(readFileSync(p, 'utf8'));
+  if (!parsed.ok) throw new Error(`schema JSON invalid at ${p}: ${parsed.error}`);
+  return parsed.value;
 }
 
 export async function validateData(data, schemaName) {

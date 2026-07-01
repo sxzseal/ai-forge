@@ -351,6 +351,25 @@ fi
 popd > /dev/null
 ok "MSW initialized"
 
+# ── Step 5.5: Install Anthropic community skills ──────────────
+# Skills referenced by enhancers (e.g. frontend-design used by enhancers/proto/frontend-design.md).
+# Non-fatal — if network is unavailable, project still works, user can install later.
+
+if [[ "${SKIP_SKILLS:-0}" != "1" ]]; then
+  info "Installing community skills (frontend-design)..."
+  pushd "$PROJECT_DIR" > /dev/null
+  if npx --yes skills add https://github.com/anthropics/skills --skill frontend-design < /dev/null > /tmp/ai-forge-skills-$$.log 2>&1; then
+    ok "frontend-design skill installed"
+  else
+    warn "Skill install failed (offline?). See /tmp/ai-forge-skills-$$.log"
+    warn "Install later:  npx skills add https://github.com/anthropics/skills --skill frontend-design"
+  fi
+  rm -f /tmp/ai-forge-skills-$$.log
+  popd > /dev/null
+else
+  info "Skipping community skill install (SKIP_SKILLS=1)"
+fi
+
 # ── Step 6: Initialize git ─────────────────────────────────────
 
 info "Initializing git repository..."

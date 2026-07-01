@@ -22,11 +22,41 @@
 //   forge-patch parse <patch-file>             # print parsed blocks as JSON
 
 import { readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, isAbsolute, relative, sep } from 'node:path';
 import { parseArgs, die, findRepoRoot, findLoopDir, ensureDir, nowIso, appendLine, readLoopId } from './_common.mjs';
 
 const PREFIX = 'forge-patch';
 const fail = (m, c = 1) => die(PREFIX, m, c);
+
+// Paths that must never be modifiable via a patch, even from a "create" block.
+// Order matters: prefix match on posix-normalized relative path.
+const FORBIDDEN_PATH_PREFIXES = [
+  '.git/',
+  '.claude/settings.json',
+  '.claude/settings.local.json',
+  'node_modules/',
+];
+
+function assertSafePath(repoRoot, filePath) {
+  if (!filePath || typeof filePath !== 'string') {
+    throw new Error(`invalid file path: ${JSON.stringify(filePath)}`);
+  }
+  if (isAbsolute(filePath)) {
+    throw new Error(`absolute path forbidden: ${filePath}`);
+  }
+  const abs = resolve(repoRoot, filePath);
+  const rel = relative(repoRoot, abs);
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error(`path traversal forbidden: ${filePath}`);
+  }
+  const norm = rel.split(sep).join('/');
+  for (const bad of FORBIDDEN_PATH_PREFIXES) {
+    if (norm === bad || norm.startsWith(bad)) {
+      throw new Error(`path in forbidden zone (${bad}): ${filePath}`);
+    }
+  }
+  return abs;
+}
 
 const HEAD = '<<<<<<< SEARCH';
 const DIV = '=======';
@@ -71,7 +101,12 @@ function parsePatch(text) {
 }
 
 function validateBlock(block, repoRoot) {
-  const abs = resolve(repoRoot, block.file);
+  let abs;
+  try {
+    abs = assertSafePath(repoRoot, block.file);
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
   if (!existsSync(abs)) {
     // If SEARCH is empty and file doesn't exist, that's a "create file" operation
     if (block.search === '') return { ok: true, kind: 'create', abs };

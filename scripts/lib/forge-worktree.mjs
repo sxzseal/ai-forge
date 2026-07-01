@@ -19,6 +19,16 @@ import { parseArgs, die, findRepoRoot, findLoopDir, ensureDir, nowIso, appendLin
 const PREFIX = 'forge-worktree';
 const fail = (m, c = 1) => die(PREFIX, m, c);
 
+const SUBAGENT_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+
+function requireSubagentId(id) {
+  if (!id || typeof id !== 'string') fail('--subagent <id> required');
+  if (!SUBAGENT_ID_RE.test(id)) {
+    fail(`invalid --subagent id: ${JSON.stringify(id)} (allowed: [a-zA-Z0-9_-]{1,64})`);
+  }
+  return id;
+}
+
 function git(args, opts = {}) {
   const repoRoot = opts.cwd || findRepoRoot();
   const r = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8', ...opts });
@@ -67,8 +77,7 @@ function emitEvent(kind, payload) {
 }
 
 function cmdCreate(flags) {
-  const id = flags.subagent;
-  if (!id) fail('--subagent <id> required');
+  const id = requireSubagentId(flags.subagent);
   const wt = worktreePath(id);
   if (existsSync(wt)) fail(`worktree already exists: ${wt}`);
   const br = branchName(id);
@@ -85,14 +94,12 @@ function cmdList() {
 }
 
 function cmdPath(flags) {
-  const id = flags.subagent;
-  if (!id) fail('--subagent <id> required');
+  const id = requireSubagentId(flags.subagent);
   process.stdout.write(worktreePath(id) + '\n');
 }
 
 function cmdMerge(flags) {
-  const id = flags.subagent;
-  if (!id) fail('--subagent <id> required');
+  const id = requireSubagentId(flags.subagent);
   const wt = worktreePath(id);
   if (!existsSync(wt)) fail(`worktree not found: ${wt}`);
   const br = branchName(id);
@@ -121,8 +128,7 @@ function cmdMerge(flags) {
 }
 
 function cmdDrop(flags) {
-  const id = flags.subagent;
-  if (!id) fail('--subagent <id> required');
+  const id = requireSubagentId(flags.subagent);
   const wt = worktreePath(id);
   const br = branchName(id);
   const mainWt = findMainWorktree();
