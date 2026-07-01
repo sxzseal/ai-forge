@@ -59,6 +59,19 @@ interface BadgePos {
   visible: boolean
 }
 
+function samePositions(a: Record<string, BadgePos>, b: Record<string, BadgePos>): boolean {
+  const keysA = Object.keys(a)
+  const keysB = Object.keys(b)
+  if (keysA.length !== keysB.length) return false
+  for (const k of keysA) {
+    const pa = a[k]
+    const pb = b[k]
+    if (!pb) return false
+    if (pa.x !== pb.x || pa.y !== pb.y || pa.visible !== pb.visible) return false
+  }
+  return true
+}
+
 export function AnchorBadges({ records, onSelect }: AnchorBadgesProps) {
   const [positions, setPositions] = useState<Record<string, BadgePos>>({})
 
@@ -86,7 +99,7 @@ export function AnchorBadges({ records, onSelect }: AnchorBadgesProps) {
           visible: true,
         }
       }
-      setPositions(next)
+      setPositions((prev) => (samePositions(prev, next) ? prev : next))
     }
     const schedule = () => {
       if (!raf) raf = requestAnimationFrame(compute)
@@ -95,8 +108,12 @@ export function AnchorBadges({ records, onSelect }: AnchorBadgesProps) {
     schedule()
     window.addEventListener('scroll', schedule, true)
     window.addEventListener('resize', schedule)
+    const moTarget =
+      document.querySelector('#storybook-root') ||
+      document.querySelector('[data-story-block]') ||
+      document.body
     const mo = new MutationObserver(schedule)
-    mo.observe(document.body, { childList: true, subtree: true })
+    mo.observe(moTarget, { childList: true, subtree: true })
     return () => {
       cancelAnimationFrame(raf)
       window.removeEventListener('scroll', schedule, true)
