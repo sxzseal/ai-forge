@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-forge.dev/schemas/subagent-receipt.json",
+  "title": "Subagent Receipt",
+  "description": "Structured output every subagent MUST write on completion. Consumed by main skill for verification, metrics, and acceptance-coverage aggregation.",
+  "type": "object",
+  "required": ["subagentId", "phase", "role", "status", "filesChanged"],
+  "additionalProperties": false,
+  "properties": {
+    "subagentId": {
+      "type": "string",
+      "description": "Matches the id in the corresponding subagent.spawn event"
+    },
+    "phase": { "type": "string", "enum": ["prototype", "dev", "deploy"] },
+    "role": {
+      "type": "string",
+      "description": "Role name, e.g. feature-impl / api-route / shared-primitive / page-integration / plan-analyst"
+    },
+    "taskRef": {
+      "type": "string",
+      "description": "Task id from task-state.json (e.g. T001) or plan.json (task-1)"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["success", "partial", "failed"]
+    },
+    "filesChanged": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string" },
+          "kind": { "type": "string", "enum": ["create", "edit", "delete"] },
+          "linesAdded": { "type": "integer", "minimum": 0 },
+          "linesRemoved": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "patchesApplied": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Paths of applied patches under .loop/dev/pending-patches/"
+    },
+    "selfCheckResults": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "passed"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "passed": { "type": "boolean" },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "details": { "type": "string" }
+        }
+      }
+    },
+    "enhancersUsed": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "deviations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "rule": { "type": "string" },
+          "file": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      },
+      "description": "Rules the subagent knowingly departed from; each must have a reason"
+    },
+    "durationMs": { "type": "integer", "minimum": 0 },
+    "tokensIn": { "type": "integer", "minimum": 0 },
+    "tokensOut": { "type": "integer", "minimum": 0 },
+    "worktreePath": {
+      "type": "string",
+      "description": "If subagent worked in a worktree, its path (relative to repo root)"
+    }
+  }
+}

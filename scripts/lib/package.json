@@ -1,0 +1,11 @@
+{
+  "name": "ai-forge-lib",
+  "private": true,
+  "version": "0.0.0",
+  "description": "ai-forge state CLI runtime deps. Installed once into scripts/lib/node_modules; not part of the user project.",
+  "type": "module",
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  }
+}

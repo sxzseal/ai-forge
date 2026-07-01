@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-forge.dev/schemas/task-state.json",
+  "title": "Dev Phase Task State",
+  "description": "Per-task checkpoint for dev-dev. Enables true resume across sessions.",
+  "type": "object",
+  "required": ["loopId", "createdAt", "tasks"],
+  "additionalProperties": false,
+  "properties": {
+    "loopId": { "type": "string", "pattern": "^loop-\\d{8}-\\d{3}$" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "tasks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Task" }
+    }
+  },
+  "$defs": {
+    "Task": {
+      "type": "object",
+      "required": ["id", "title", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^T\\d{3}$" },
+        "title": { "type": "string" },
+        "layer": {
+          "type": "string",
+          "enum": ["infra", "api", "feature", "route", "other"],
+          "description": "Maps to the task-breakdown layers [1]-[4]"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "in_progress", "done", "failed", "skipped"]
+        },
+        "deps": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^T\\d{3}$" }
+        },
+        "files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Target file paths this task creates or modifies"
+        },
+        "commits": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Git commit SHAs produced by this task"
+        },
+        "acRefs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Acceptance criteria IDs this task covers (e.g. AC-001)"
+        },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" },
+        "lastError": { "type": "string" }
+      }
+    }
+  }
+}
