@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-forge.dev/schemas/plan.json",
+  "title": "Phase Plan",
+  "description": "Plan/Act separation: plan-mode subagent produces this before any file writes. Act-mode subagents must stay within filesPlanned or log deviations.",
+  "type": "object",
+  "required": ["phase", "tasks", "createdAt"],
+  "additionalProperties": false,
+  "properties": {
+    "phase": { "type": "string", "enum": ["prototype", "dev", "deploy"] },
+    "loopId": { "type": "string", "pattern": "^loop-\\d{8}-\\d{3}$" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "approvedAt": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "Filled after user AskUserQuestion confirmation"
+    },
+    "estimatedSteps": { "type": "integer", "minimum": 0 },
+    "dependencyGraph": {
+      "type": "string",
+      "description": "Human-readable dep summary, e.g. '[1] → [2] → parallel: [3], [4]'"
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "filesPlanned": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "subagent": {
+            "type": "string",
+            "description": "Role name from .claude/roles/"
+          },
+          "dependencies": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "verification": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "acceptanceRefs": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "in_progress", "done", "failed", "skipped"]
+          }
+        }
+      }
+    }
+  }
+}

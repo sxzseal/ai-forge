@@ -17,18 +17,49 @@ error() { echo -e "${RED}✗${NC} $1"; exit 1; }
 
 # ── Arguments ──────────────────────────────────────────────────
 
-PROJECT_NAME="${1:-}"
-TARGET_DIR="${2:-.}"
+PROJECT_NAME=""
+TARGET_DIR="."
+NO_VISUAL_FEEDBACK=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-visual-feedback)
+      NO_VISUAL_FEEDBACK=1
+      shift
+      ;;
+    --help|-h)
+      PROJECT_NAME=""
+      break
+      ;;
+    -*)
+      error "未知选项：$1"
+      ;;
+    *)
+      if [[ -z "$PROJECT_NAME" ]]; then
+        PROJECT_NAME="$1"
+      elif [[ "$TARGET_DIR" == "." ]]; then
+        TARGET_DIR="$1"
+      else
+        error "多余参数：$1"
+      fi
+      shift
+      ;;
+  esac
+done
 
 if [[ -z "$PROJECT_NAME" ]]; then
   echo ""
   echo "  ai-forge — AI-driven development framework"
   echo ""
-  echo "  Usage: $0 <project-name> [target-directory]"
+  echo "  Usage: $0 <project-name> [target-directory] [--no-visual-feedback]"
+  echo ""
+  echo "  Options:"
+  echo "    --no-visual-feedback   Skip Storybook annotation tool (smaller install)"
   echo ""
   echo "  Examples:"
   echo "    $0 my-app"
   echo "    $0 my-app ~/Projects"
+  echo "    $0 my-app --no-visual-feedback"
   echo ""
   exit 1
 fi
@@ -89,6 +120,34 @@ if [[ -d "$PROJECT_DIR/_storybook" ]]; then
   ok "Renamed _storybook → .storybook"
 fi
 
+# Strip visual-feedback annotation tool if user opted out
+if [[ "$NO_VISUAL_FEEDBACK" -eq 1 && -d "$PROJECT_DIR/.storybook/visual-feedback" ]]; then
+  rm -rf "$PROJECT_DIR/.storybook/visual-feedback"
+  # Remove the visual-feedback panel import + setup from preview.ts (best-effort, leave a note if pattern not found)
+  if grep -q "visual-feedback" "$PROJECT_DIR/.storybook/preview.ts" 2>/dev/null; then
+    # Strip lines mentioning visual-feedback (import + register call)
+    sed -i.bak '/visual-feedback/d' "$PROJECT_DIR/.storybook/preview.ts" && rm "$PROJECT_DIR/.storybook/preview.ts.bak"
+  fi
+  # Replace `concurrently "storybook" "node .storybook/visual-feedback/server.cjs"` with plain storybook
+  if grep -q "visual-feedback" "$PROJECT_DIR/package.json" 2>/dev/null; then
+    node -e '
+      const fs = require("fs");
+      const path = process.argv[1];
+      const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
+      if (pkg.scripts) {
+        for (const [k, v] of Object.entries(pkg.scripts)) {
+          if (typeof v === "string" && v.includes("visual-feedback")) {
+            // Fall back to bare storybook script
+            pkg.scripts[k] = "storybook dev -p 6006";
+          }
+        }
+      }
+      fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
+    ' "$PROJECT_DIR/package.json"
+  fi
+  ok "Visual-feedback tool removed (--no-visual-feedback)"
+fi
+
 if [[ -d "$PROJECT_DIR/_github" ]]; then
   mv "$PROJECT_DIR/_github" "$PROJECT_DIR/.github"
   ok "Renamed _github → .github"
@@ -102,8 +161,111 @@ for skill_dir in "$FORGE_DIR/.claude/skills"/dev-*; do
     cp -R "$skill_dir" "$PROJECT_DIR/.claude/skills/"
   fi
 done
-cp "$FORGE_DIR/.claude/commands/dev-loop.md" "$PROJECT_DIR/.claude/commands/" 2>/dev/null || true
-ok "Dev Loop skills installed (6 skills + 1 command)"
+for cmd_file in "$FORGE_DIR/.claude/commands"/dev-*.md; do
+  if [[ -f "$cmd_file" ]]; then
+    cp "$cmd_file" "$PROJECT_DIR/.claude/commands/"
+  fi
+done
+cp "$FORGE_DIR/.claude/PHASE_CONTRACT.md" "$PROJECT_DIR/.claude/" 2>/dev/null || true
+
+# Copy framework state CLI + JSON schemas (used by all phase skills)
+info "Installing forge-state CLI + schemas + roles..."
+mkdir -p "$PROJECT_DIR/scripts/lib" "$PROJECT_DIR/.claude/schemas" "$PROJECT_DIR/.claude/roles"
+for f in "$FORGE_DIR/scripts/lib"/forge-*.mjs "$FORGE_DIR/scripts/lib"/_common.mjs "$FORGE_DIR/scripts/lib"/enhancers.mjs; do
+  [[ -f "$f" ]] && cp "$f" "$PROJECT_DIR/scripts/lib/"
+done
+cp "$FORGE_DIR/scripts/lib/package.json" "$PROJECT_DIR/scripts/lib/"
+chmod +x "$PROJECT_DIR/scripts/lib"/*.mjs 2>/dev/null || true
+cp "$FORGE_DIR/.claude/schemas/"*.json "$PROJECT_DIR/.claude/schemas/"
+if [[ -d "$FORGE_DIR/.claude/roles" ]]; then
+  cp "$FORGE_DIR/.claude/roles/"*.json "$PROJECT_DIR/.claude/roles/" 2>/dev/null || true
+fi
+CLI_COUNT=$(ls "$PROJECT_DIR/scripts/lib"/*.mjs 2>/dev/null | wc -l | tr -d ' ')
+SCHEMA_COUNT=$(ls "$PROJECT_DIR/.claude/schemas"/*.json 2>/dev/null | wc -l | tr -d ' ')
+ROLE_COUNT=$(ls "$PROJECT_DIR/.claude/roles"/*.json 2>/dev/null | wc -l | tr -d ' ')
+ok "forge CLIs (${CLI_COUNT}) + schemas (${SCHEMA_COUNT}) + roles (${ROLE_COUNT}) installed"
+
+# Merge framework .claude/settings.json (hooks) into project settings
+if [[ -f "$FORGE_DIR/.claude/settings.json" ]]; then
+  info "Merging framework hooks into .claude/settings.json..."
+  node - "$PROJECT_DIR/.claude/settings.json" "$FORGE_DIR/.claude/settings.json" <<'JS'
+    const fs = require('fs');
+    const path = require('path');
+    const [projectPath, forgePath] = process.argv.slice(2);
+    const forge = JSON.parse(fs.readFileSync(forgePath, 'utf8'));
+    let project = {};
+    try { project = JSON.parse(fs.readFileSync(projectPath, 'utf8')); } catch {}
+
+    const projectAllow = (project.permissions && project.permissions.allow) || [];
+    const forgeAllow = (forge.permissions && forge.permissions.allow) || [];
+    const projectDeny = (project.permissions && project.permissions.deny) || [];
+    const forgeDeny = (forge.permissions && forge.permissions.deny) || [];
+
+    // Union hooks per event kind + matcher, deduped by command signature so a
+    // fresh install picks up all framework hooks and any pre-existing user hooks.
+    const projectHooks = project.hooks || {};
+    const forgeHooks = forge.hooks || {};
+    const hookKinds = new Set([...Object.keys(projectHooks), ...Object.keys(forgeHooks)]);
+    const mergedHooks = {};
+    for (const kind of hookKinds) {
+      const projectEntries = Array.isArray(projectHooks[kind]) ? projectHooks[kind] : [];
+      const forgeEntries = Array.isArray(forgeHooks[kind]) ? forgeHooks[kind] : [];
+      const byMatcher = new Map();
+      for (const e of projectEntries) byMatcher.set(e.matcher || '', { matcher: e.matcher, hooks: [...(e.hooks || [])] });
+      for (const e of forgeEntries) {
+        const key = e.matcher || '';
+        const slot = byMatcher.get(key) || { matcher: e.matcher, hooks: [] };
+        const seen = new Set(slot.hooks.map((h) => `${h.type}::${h.command}`));
+        for (const h of (e.hooks || [])) {
+          const sig = `${h.type}::${h.command}`;
+          if (!seen.has(sig)) { slot.hooks.push(h); seen.add(sig); }
+        }
+        byMatcher.set(key, slot);
+      }
+      mergedHooks[kind] = [...byMatcher.values()];
+    }
+
+    const merged = {
+      ...project,
+      permissions: {
+        ...(project.permissions || {}),
+        allow: Array.from(new Set([...projectAllow, ...forgeAllow])),
+        ...(projectDeny.length + forgeDeny.length > 0
+          ? { deny: Array.from(new Set([...projectDeny, ...forgeDeny])) }
+          : {}),
+      },
+      hooks: mergedHooks,
+    };
+    fs.mkdirSync(path.dirname(projectPath), { recursive: true });
+    fs.writeFileSync(projectPath, JSON.stringify(merged, null, 2) + '\n');
+JS
+  ok "settings.json hooks merged"
+fi
+
+# Ship the tests/smoke/ template (consumed by dev-deploy Step 4.5)
+if [[ -d "$FORGE_DIR/template/tests/smoke" && ! -d "$PROJECT_DIR/tests/smoke" ]]; then
+  mkdir -p "$PROJECT_DIR/tests/smoke"
+  cp -R "$FORGE_DIR/template/tests/smoke/." "$PROJECT_DIR/tests/smoke/"
+  ok "tests/smoke/ installed"
+fi
+
+# Pin which forge version this project was scaffolded from (consumed by upgrade.sh)
+FORGE_SHA="$(git -C "$FORGE_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+FORGE_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$PROJECT_DIR/.claude/version.txt" <<EOF
+# ai-forge version pin (used by scripts/upgrade.sh)
+forge_sha=$FORGE_SHA
+scaffolded_at=$FORGE_DATE
+EOF
+
+# Copy phase enhancers (framework-level extension knowledge packs)
+if [[ -d "$FORGE_DIR/.claude/enhancers" ]]; then
+  cp -R "$FORGE_DIR/.claude/enhancers" "$PROJECT_DIR/.claude/"
+  enhancer_count=$(find "$PROJECT_DIR/.claude/enhancers" -name '*.md' -not -name '_*' -not -name 'README.md' | wc -l | tr -d ' ')
+  ok "Phase enhancers installed (${enhancer_count} active enhancer(s))"
+fi
+
+ok "Dev Loop skills installed (6 skills + 5 commands + phase contract + forge CLIs + roles + hooks)"
 
 # ── Step 2: Replace project name placeholders ──────────────────
 
@@ -135,22 +297,14 @@ ok "Project name replaced in all files"
 info "Creating .loop/ directory structure..."
 mkdir -p "$PROJECT_DIR/.loop"/{prototype,dev,review,test,deploy,archive}
 
-cat > "$PROJECT_DIR/.loop/session.json" <<EOF
-{
-  "id": "loop-$(date +%Y%m%d)-001",
-  "requirement": "",
-  "createdAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "currentPhase": "prototype",
-  "phases": {
-    "prototype": { "status": "pending" },
-    "dev": { "status": "pending" },
-    "deploy": { "status": "pending" }
-  },
-  "artifacts": {}
-}
-EOF
+LOOP_ID="loop-$(date +%Y%m%d)-001"
+CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# Write through forge-state so the seed file is schema-validated
+echo "{\"loopId\":\"$LOOP_ID\",\"requirement\":\"\",\"createdAt\":\"$CREATED_AT\",\"currentPhase\":\"prototype\",\"phases\":{\"prototype\":{\"status\":\"pending\"},\"dev\":{\"status\":\"pending\"},\"deploy\":{\"status\":\"pending\"}},\"artifacts\":{},\"schemaVersion\":1}" \
+  | (cd "$PROJECT_DIR" && node scripts/lib/forge-state.mjs write .loop/session.json --schema session) \
+  || error "forge-state seed write failed — check scripts/lib/forge-state.mjs"
 
-ok ".loop/ directory created"
+ok ".loop/ directory created (session.json schema-validated)"
 
 # ── Step 4: Install dependencies ───────────────────────────────
 
@@ -173,6 +327,15 @@ popd > /dev/null
 
 ok "Dependencies installed"
 
+# ── Step 4.1: Install forge-state runtime deps (ajv) ───────────
+info "Installing forge-state runtime deps..."
+pushd "$PROJECT_DIR" > /dev/null
+if ! node scripts/lib/forge-state.mjs --install-deps 2>&1 | tail -3; then
+  warn "forge-state deps install failed — first /dev-loop run will retry"
+fi
+popd > /dev/null
+ok "forge-state runtime ready"
+
 # ── Step 5: Initialize MSW service worker ──────────────────────
 # Note: shadcn init is skipped — template already includes components.json + UI components
 
@@ -192,6 +355,25 @@ if ! $MSW_INIT "$PROJECT_DIR/public/" --save 2>&1 | tail -3; then
 fi
 popd > /dev/null
 ok "MSW initialized"
+
+# ── Step 5.5: Install Anthropic community skills ──────────────
+# Skills referenced by enhancers (e.g. frontend-design used by enhancers/proto/frontend-design.md).
+# Non-fatal — if network is unavailable, project still works, user can install later.
+
+if [[ "${SKIP_SKILLS:-0}" != "1" ]]; then
+  info "Installing community skills (frontend-design)..."
+  pushd "$PROJECT_DIR" > /dev/null
+  if npx --yes skills add https://github.com/anthropics/skills --skill frontend-design < /dev/null > /tmp/ai-forge-skills-$$.log 2>&1; then
+    ok "frontend-design skill installed"
+  else
+    warn "Skill install failed (offline?). See /tmp/ai-forge-skills-$$.log"
+    warn "Install later:  npx skills add https://github.com/anthropics/skills --skill frontend-design"
+  fi
+  rm -f /tmp/ai-forge-skills-$$.log
+  popd > /dev/null
+else
+  info "Skipping community skill install (SKIP_SKILLS=1)"
+fi
 
 # ── Step 6: Initialize git ─────────────────────────────────────
 

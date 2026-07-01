@@ -4,10 +4,10 @@
 
 ```
 需求 → [确认] → 原型 → [确认] → 开发 → [确认] → 部署
-              （可选：/dev-prd、/dev-review、/dev-test 独立调用）
+              （可选：/dev-prd、/dev-review、/dev-test 独立调用；/dev-undo 回退 checkpoint）
 ```
 
-**一句话**：把开发流程的核心三阶段（原型 → 开发 → 部署）串成一条 Dev Loop，AI 编排执行，人类在关键节点确认。复杂场景按需手动调用 PRD / 审查（含 seal 静态扫描）/ 测试 三个独立增强 skill。
+**一句话**：把开发流程的核心三阶段（原型 → 开发 → 部署）串成一条 Dev Loop，AI 编排执行，人类在关键节点确认。所有跨阶段状态由 **Forge Harness**（`scripts/lib/forge-*.mjs`）托管——事件日志、预算、checkpoint、worktree 沙箱、三级审批门——保证可重放、可回退、可审计。复杂场景按需手动调用 PRD / 审查（含 seal 静态扫描）/ 测试 三个独立增强 skill。
 
 ---
 
@@ -15,6 +15,7 @@
 
 - [快速开始](#快速开始)
 - [Dev Loop 流程](#dev-loop-流程)
+- [Forge Harness](#forge-harness)
 - [架构设计](#架构设计)
 - [技术栈](#技术栈)
 - [项目结构](#项目结构)
@@ -126,7 +127,46 @@ npm run test         # 运行测试
 /dev-prd 用户管理系统   # 生成结构化 PRD
 /dev-review            # 深度代码审查
 /dev-test              # 完整测试套件 + 覆盖率
+
+# 回退到某个 checkpoint（每个 phase 会创建 git tag: loop-<id>-cp-<n>）
+/dev-undo              # 交互选择
+/dev-undo cp-3         # 直接回到 checkpoint 3
+/dev-undo cp-3 --keep-events   # 只回滚代码，保留 events.jsonl
 ```
+
+---
+
+## Forge Harness
+
+Dev Loop 的三个 phase skill 不直接写状态文件，而是通过 **Forge Harness CLI** 统一托管。所有 `.loop/*.json`、`.jsonl` 写入都走 schema 校验 + atomic write，保证跨 session 断点可恢复、可审计。
+
+### CLI 一览
+
+| CLI | 职责 | 关键命令 |
+|-----|------|---------|
+| `forge-state` | 状态读写 + schema 校验 | `read/write/validate` |
+| `forge-events` | 追加式事件日志（`.loop/events.jsonl`） | `append/tail/query/rollup/rollback/resume-hint` |
+| `forge-budget` | 每 phase 的 step/subagent/retry 预算 | `check/consume/set/reset` |
+| `forge-metrics` | 汇总 events → phase/loop 指标 | `compute/rollup/show` |
+| `forge-mode` | 三级审批门（suggest / auto-edit / full-auto） | `get/set/gate/classify` |
+| `forge-patch` | Aider 风格 SEARCH-REPLACE 补丁 | `validate/apply` |
+| `forge-worktree` | subagent 隔离到 git worktree | `create/list/merge/drop/path` |
+| `forge-repomap` | 轻量符号图，注入 subagent 上下文 | `build/show` |
+| `enhancers` | 扫描 `.claude/enhancers/<phase>/` frontmatter | `list/select` |
+
+### 治理机制
+
+- **三级模式**（`session.json.mode`）
+  - `suggest` — 所有写操作都要人工确认
+  - `auto-edit`（默认）— 编辑自动放行，危险动作（`git push`、`vercel --prod`、`rm -rf`、`--no-verify` 等）走 AskUserQuestion
+  - `full-auto` — 编辑 + 部署自动，只挡 destructive
+  - 通过 `PreToolUse` hook 在 settings.json 里挡在 Bash 前面
+- **预算**（`phases.<phase>.budget`）— 每个 phase 有 step/subagent/retry 上限；≥80% 预警，100% 阻塞并要求人工决策
+- **事件日志** — 每一步 entry/exit、subagent 派发、patch apply、checkpoint 都写 `events.jsonl`，`forge-metrics` 反推指标，`forge-events resume-hint` 帮 `--resume` 定位断点
+- **Checkpoint & 回退** — 每个 phase 完成后打 git tag `loop-<id>-cp-<n>`；`/dev-undo` 可回退代码与事件到任意 checkpoint
+- **Subagent 隔离** — dev-dev 派发的子任务默认在 `.loop/.worktrees/<id>/` 独立分支执行，验收后 squash-merge 回主分支；失败可 drop 而不影响主工作树
+- **Role Manifest** — `.claude/roles/*.json` 声明每个 subagent 允许的工具、bash 模式、写作范围。plan-analyst 只读；feature-impl/api-route/page-integration/shared-primitive 可写但禁 `git push`、禁 `--no-verify`
+- **Schema 校验** — `PostToolUse` hook 对 `session.json` / `task-state.json` / `api-contracts.json` / `plan.json` / `subagent-receipts/*.json` / `phase-metrics.json` 全部做 schema 校验，写坏就报错
 
 ---
 
@@ -156,19 +196,28 @@ npm run test         # 运行测试
 
 ### 状态管理：`.loop/` 目录
 
-每个开发循环在项目根目录创建 `.loop/` 文件夹，在阶段间传递上下文，支持中断恢复：
+每个开发循环在项目根目录创建 `.loop/` 文件夹，在阶段间传递上下文，支持中断恢复与 checkpoint 回退：
 
 ```
 .loop/
-├── session.json              # 当前 loop 状态（currentPhase + last<Skill> 字段）
+├── session.json              # 当前 loop 状态（mode + currentPhase + phases[].budget + last<Skill>）
+├── events.jsonl              # ★ 追加式事件日志（step/subagent/patch/checkpoint）
+├── events-archive/           # /dev-undo 回退后归档的旧 events
+├── loop-summary.json         # forge-metrics rollup 产出的整体指标
+├── phases/
+│   └── <phase>/metrics.json  # 每个 phase 的 step/subagent/retry/token 指标
+├── .worktrees/               # dev-dev subagent 的独立 git worktree
 ├── prd.md                    # 独立 skill (dev-prd): 结构化 PRD
 ├── api-contracts.json        # dev-prd / dev-proto 共同维护的 API 契约
 ├── acceptance-checklist.md   # Phase 1 (dev-proto): 定稿后反推的验收清单
 ├── prototype/
 │   └── stories-manifest.md   # Phase 1 (dev-proto): Story → 组件 → API 映射
 ├── dev/
+│   ├── plan.json             # ★ plan-analyst 产出的任务图（schema 校验）
 │   ├── task-breakdown.md     # Phase 2 (dev-dev): 任务拆解
-│   └── component-mapping.md  # Phase 2 (dev-dev): 组件映射
+│   ├── component-mapping.md  # Phase 2 (dev-dev): 组件映射
+│   ├── repo-map.txt          # forge-repomap 产出的符号图（subagent 上下文）
+│   └── subagent-receipts/    # 每个 subagent 的执行回执（含 patch + 验收记录）
 ├── deploy/
 │   ├── manifest.md           # Phase 3 (dev-deploy): 部署 URL + 健康检查
 │   └── history.md            # Phase 3 (dev-deploy): 部署历史
@@ -182,6 +231,8 @@ npm run test         # 运行测试
 │   └── coverage-report.md    # 覆盖率报告
 └── archive/                  # 已完成的 loop 归档
 ```
+
+> Checkpoint tag：每个 phase 完成时打 `loop-<id>-cp-<n>` git tag，`/dev-undo` 通过 tag 回退代码 + `.loop/events.jsonl`。
 
 ---
 
@@ -210,6 +261,8 @@ npm run test         # 运行测试
 ai-forge/
 ├── .claude/                    # Dev Loop 编排层
 │   ├── CLAUDE.md               # 项目上下文
+│   ├── PHASE_CONTRACT.md       # 跨阶段状态契约
+│   ├── settings.json           # Pre/PostToolUse hooks + permissions allowlist
 │   ├── skills/                 # 6 个 skill（3 个管线内 + 3 个独立增强）
 │   │   ├── dev-proto/          # Phase 1（默认管线）: 原型开发
 │   │   ├── dev-dev/            # Phase 2（默认管线）: 功能开发
@@ -217,13 +270,37 @@ ai-forge/
 │   │   ├── dev-prd/            # 独立: PRD 生成
 │   │   ├── dev-review/         # 独立: 代码审查
 │   │   └── dev-test/           # 独立: 测试生成
-│   └── commands/
-│       └── dev-loop.md         # 默认管线编排命令
+│   ├── commands/               # 5 个 slash command
+│   │   ├── dev-loop.md         # 默认管线编排命令
+│   │   ├── dev-proto.md / dev-dev.md / dev-deploy.md
+│   │   └── dev-undo.md         # 回退到 checkpoint
+│   ├── roles/                  # ★ subagent 角色清单（allowedTools / bash 模式）
+│   │   ├── plan-analyst.json   # 只读规划
+│   │   ├── feature-impl.json   # 功能模块实现
+│   │   ├── api-route.json      # API 路由 + Zod 验证
+│   │   ├── page-integration.json  # App Router 页面装配
+│   │   └── shared-primitive.json  # L2 共享原语
+│   ├── schemas/                # JSON Schemas（session/api-contracts/task-state/plan/event/phase-metrics/subagent-receipt/subagent-role）
+│   └── enhancers/              # 阶段增强能力包（proto/dev/deploy 三个子目录）
+│
+├── scripts/
+│   ├── create.sh               # 生成新项目
+│   ├── upgrade.sh              # 升级现有项目的框架资产
+│   └── lib/                    # ★ Forge Harness CLI（atomic write + schema 校验）
+│       ├── _common.mjs         # 参数解析、原子写、schema 加载
+│       ├── forge-state.mjs     # 状态 read/write/validate
+│       ├── forge-events.mjs    # 事件日志（append/tail/query/rollup/rollback/resume-hint）
+│       ├── forge-budget.mjs    # step/subagent/retry 预算
+│       ├── forge-metrics.mjs   # events → phase/loop 指标
+│       ├── forge-mode.mjs      # 三级审批门 gate
+│       ├── forge-patch.mjs     # SEARCH-REPLACE 补丁 validate/apply
+│       ├── forge-worktree.mjs  # subagent worktree 隔离
+│       ├── forge-repomap.mjs   # 轻量符号图注入 subagent 上下文
+│       └── enhancers.mjs       # enhancer 扫描 / 选择
 │
 ├── template/                   # 项目模板（create.sh 复制此目录）
-│   ├── _claude/                # → .claude/（安装时重命名）
-│   ├── _storybook/             # → .storybook/（含 visual-feedback/）
-│   ├── api-contracts.schema.json # API 契约 JSON Schema（单一真源）
+│   ├── _claude/                # → .claude/（安装时重命名，含 skills/roles/schemas/enhancers/settings.json）
+│   ├── _storybook/             # → .storybook/（含 visual-feedback/，可选）
 │   ├── src/
 │   │   ├── app/                # Next.js App Router 入口
 │   │   ├── components/ui/      # shadcn 原子组件（L1，只读）
@@ -233,9 +310,6 @@ ai-forge/
 │   │   └── lib/                # api-response.ts / request.ts / utils.ts
 │   ├── mocks/                  # MSW handlers + 测试数据
 │   └── tests/                  # unit / integration / e2e
-│
-└── scripts/
-    └── create.sh               # 脚手架脚本（复制 + 占位符替换 + 依赖安装）
 ```
 
 ### 生成项目结构（create.sh 产出）
@@ -301,17 +375,26 @@ my-app/
   - `use-annotations.ts` / `types.ts` — 状态管理 + 类型
 - 定稿后反推「验收清单」（`.loop/acceptance-checklist.md`），作为开发输入
 - 生成 stories-manifest.md，记录 story → 组件 → API 映射
-- 同步推导 `.loop/api-contracts.json`（schema 与 `template/api-contracts.schema.json` 一致）
+- 同步推导 `.loop/api-contracts.json`（schema 与 `.claude/schemas/api-contracts.schema.json` 一致，由 `forge-state` CLI 校验）
 
 ### ⚡ Phase 2：并行开发（dev-dev）
 
-使用 **lobster-lead 模式**（内置的任务编排策略）：
+按 **拆解 → 并行 → checkpoint** 三步走：
 
 ```
-依赖分析 → 任务拆解 → 并行派发 subagent → 阶段性 commit
+plan-analyst (只读) → plan.json → 并行派发 subagent（worktree 隔离） → 阶段性 commit + git tag
 [1] 基础设施 ─→ [2] API 路由 ─→ 并行: [3a] 前端 feature 模块
                               ─→ 并行: [3b] 路由集成
 ```
+
+**Harness 加持**：
+
+- **plan-analyst** 只读产出 `plan.json`（schema 校验），拆解任务、识别依赖
+- 每个 subagent 按 `.claude/roles/*.json` 分配工具白名单，默认在独立 git worktree（`.loop/.worktrees/<id>/`）里干活
+- `forge-repomap` 抽取项目符号，作为轻量上下文注入 subagent，避免重复读大文件
+- 编辑走 `forge-patch` SEARCH-REPLACE 格式，先 validate 再 apply
+- 每个 subagent 完成后写一份回执到 `.loop/dev/subagent-receipts/<id>.json`（schema 校验）
+- `forge-budget` 卡住失控：step/subagent/retry 超预算前预警，超 100% 阻塞
 
 功能模块采用标准结构（按需使用 TanStack Query 模式）：
 
@@ -327,7 +410,7 @@ src/features/<domain>/
 └── components/           # 私有组件
 ```
 
-每个 checkpoint 前自动跑 `tsc --noEmit` + 4 项轻量自检（禁 `any`、禁裸 `useEffect+fetch`、mutation 必 invalidate、API 必走 `ok()/err()`），通过后自动 commit。
+每个 checkpoint 前自动跑 `tsc --noEmit` + 4 项轻量自检（禁 `any`、禁裸 `useEffect+fetch`、mutation 必 invalidate、API 必走 `ok()/err()`），通过后自动 commit + 打 tag `loop-<id>-cp-<n>`，方便 `/dev-undo` 回退。
 
 ### 🚀 Phase 3：多环境部署（dev-deploy）
 
@@ -453,6 +536,14 @@ dev-proto 阶段也会自动检测 PRD 所需组件并提示安装。
 ### Q: 可以跳过某些阶段吗？
 
 可以。使用 `--to <phase>` 提前结束，或 `--from <phase>` 从中间开始（前提：前置阶段的产出文件已存在）。
+
+### Q: 想撤销一次误提交或走偏的开发怎么办？
+
+用 `/dev-undo`。每个 phase 完成时都会打 git tag `loop-<id>-cp-<n>`，回退时代码 `git reset` 到目标 tag，同时把之后的 events 归档到 `.loop/events-archive/`（加 `--keep-events` 只回滚代码）。
+
+### Q: 三级审批模式（suggest / auto-edit / full-auto）怎么切？
+
+`node scripts/lib/forge-mode.mjs set <mode>` 或直接编辑 `.loop/session.json.mode`。默认 `auto-edit` — 编辑放行、危险动作（`git push` / `vercel --prod` / `rm -rf` / `--no-verify`）走 AskUserQuestion。`.claude/settings.json` 的 PreToolUse hook 会在 Bash 前把关。
 
 ---
 

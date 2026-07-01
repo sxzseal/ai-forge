@@ -24,6 +24,22 @@ function Overlay({ storyId, storyTitle }: OverlayProps) {
 
   const { records, create, update, remove } = useAnnotations()
 
+  const runAsync = useCallback(
+    async (op: () => Promise<void>, onSuccess?: () => void) => {
+      setStatus('busy')
+      setErrorMsg(null)
+      try {
+        await op()
+        setStatus('idle')
+        onSuccess?.()
+      } catch (err: unknown) {
+        setStatus('error')
+        setErrorMsg(err instanceof Error ? err.message : String(err))
+      }
+    },
+    [],
+  )
+
   const handlePick = useCallback((picked: PickedElement, element: Element) => {
     setMode({ kind: 'new', picked })
     setPickedEl(element)
@@ -67,54 +83,40 @@ function Overlay({ storyId, storyTitle }: OverlayProps) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [mode.kind])
+  }, [mode])
 
   const submitCreate = async () => {
     if (mode.kind !== 'new' || !feedback.trim()) return
-    setStatus('busy')
-    setErrorMsg(null)
-    try {
-      await create({
-        storyId,
-        storyTitle,
-        url: window.location.href,
-        element: mode.picked,
-        feedback: feedback.trim(),
-      })
-      setStatus('idle')
-      setMode({ kind: 'closed' })
-      setFeedback('')
-    } catch (err: unknown) {
-      setStatus('error')
-      setErrorMsg(err instanceof Error ? err.message : String(err))
-    }
+    await runAsync(
+      () =>
+        create({
+          storyId,
+          storyTitle,
+          url: window.location.href,
+          element: mode.picked,
+          feedback: feedback.trim(),
+        }),
+      () => {
+        setMode({ kind: 'closed' })
+        setFeedback('')
+      },
+    )
   }
 
   const submitUpdate = async () => {
     if (mode.kind !== 'edit' || !feedback.trim()) return
-    setStatus('busy')
-    setErrorMsg(null)
-    try {
-      await update(mode.record.file, feedback.trim())
-      setStatus('idle')
-      setMode({ kind: 'list' })
-      setFeedback('')
-    } catch (err: unknown) {
-      setStatus('error')
-      setErrorMsg(err instanceof Error ? err.message : String(err))
-    }
+    await runAsync(
+      () => update(mode.record.file, feedback.trim()),
+      () => {
+        setMode({ kind: 'list' })
+        setFeedback('')
+      },
+    )
   }
 
   const handleDelete = async (record: AnnotationRecord) => {
     if (!window.confirm(`删除这条标注？\n\n${record.feedback}`)) return
-    setStatus('busy')
-    try {
-      await remove(record.file)
-      setStatus('idle')
-    } catch (err: unknown) {
-      setStatus('error')
-      setErrorMsg(err instanceof Error ? err.message : String(err))
-    }
+    await runAsync(() => remove(record.file))
   }
 
   const openEdit = (record: AnnotationRecord) => {

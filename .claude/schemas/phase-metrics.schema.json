@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-forge.dev/schemas/phase-metrics.json",
+  "title": "Phase Metrics",
+  "description": "Computed metrics for one phase by walking .loop/events.jsonl. Written to .loop/phases/<phase>/metrics.json at phase completion.",
+  "type": "object",
+  "required": ["phase", "startedAt", "completedAt", "durationMs", "eventCount"],
+  "additionalProperties": true,
+  "properties": {
+    "phase": { "type": "string", "enum": ["prototype", "dev", "deploy"] },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "durationMs": { "type": "integer", "minimum": 0 },
+    "stepsCount": { "type": "integer", "minimum": 0 },
+    "subagentsSpawned": { "type": "integer", "minimum": 0 },
+    "subagentsSucceeded": { "type": "integer", "minimum": 0 },
+    "subagentSuccessRate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+    "filesChanged": { "type": "integer", "minimum": 0 },
+    "patchesApplied": { "type": "integer", "minimum": 0 },
+    "selfCheckRetries": { "type": "integer", "minimum": 0 },
+    "checkpointsCreated": { "type": "integer", "minimum": 0 },
+    "askUserCount": { "type": "integer", "minimum": 0 },
+    "enhancersApplied": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "eventCount": { "type": "integer", "minimum": 0 },
+    "byKind": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    }
+  }
+}

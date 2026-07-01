@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-forge.dev/schemas/subagent-role.json",
+  "title": "Subagent Role",
+  "description": "Declares what tools a subagent role may use. Used to inject explicit constraints into subagent prompts and to configure PreToolUse hooks.",
+  "type": "object",
+  "required": ["role", "description", "allowedTools"],
+  "additionalProperties": false,
+  "properties": {
+    "role": { "type": "string" },
+    "description": { "type": "string" },
+    "readOnly": {
+      "type": "boolean",
+      "default": false,
+      "description": "true for plan-mode roles that must not modify files"
+    },
+    "allowedTools": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "Read",
+          "Write",
+          "Edit",
+          "NotebookEdit",
+          "Glob",
+          "Grep",
+          "Bash",
+          "WebFetch",
+          "WebSearch",
+          "AskUserQuestion",
+          "Task"
+        ]
+      }
+    },
+    "allowedBashPatterns": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Regex patterns; if provided, subagent Bash commands must match one of these"
+    },
+    "deniedBashPatterns": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Regex patterns to reject regardless of allow list"
+    },
+    "requiredOutputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "schema"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string" },
+          "schema": { "type": "string" }
+        }
+      }
+    },
+    "promptInjections": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Additional constraint strings prepended to every subagent prompt for this role"
+    }
+  }
+}

@@ -107,6 +107,47 @@ src/stories/<project>/_shared/theme.css
   "data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0"
   ```
 
+### 布局自适应规范（**高频踩坑点，必读**）
+
+Storybook canvas 宽度 ≠ 视口宽度 —— 左侧栏 + 右 addon 面板打开时，canvas 经常只剩 600–900px。原型必须在这个区间不被裁切。
+
+**禁止**：
+
+- ❌ `grid-cols-[260px_1fr_360px]` —— 固定 px 列宽，窄 canvas 直接溢出
+- ❌ `w-[400px]` / `min-w-[800px]` —— 写死的宽度
+- ❌ `h-[calc(100vh-120px)]` —— Storybook iframe 高度不是 100vh
+- ❌ 三栏以上布局没有 `overflow-x-auto` 兜底
+
+**强制**：
+
+- ✅ 多栏布局用响应式 + `minmax(0, 1fr)`：
+  ```tsx
+  // 桌面三栏，窄屏自动堆叠 —— 注意用 md (768) 而非 lg (1024)
+  // Storybook 侧栏 + 工具栏会吃掉 ~280px，浏览器 1440 时 canvas 只剩 ~1140
+  // 用 lg 断点会让 1280 浏览器（canvas ~980）直接堆叠，用户以为内容丢失
+  //
+  // 关键：内容主列（编辑器/详情区）必须有 minmax(280px, 1fr)，
+  // 否则窄 canvas 时这一列会被挤到 100-200px，内部内容溢出遮挡相邻列。
+  className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(180px,220px)_minmax(280px,1fr)_minmax(220px,280px)]"
+  ```
+- ✅ 全屏页面高度用 `min-h-screen` + flex 链路，而非 `100vh` 数学计算；确需 vh 时用 `100dvh`
+- ✅ 任何可能横向溢出的容器套 `min-w-0 overflow-hidden`（flex/grid 子项默认 `min-width: auto` 会撑破父级，必须显式 `min-w-0`）
+- ✅ 文本节点用 `truncate` 或 `line-clamp-N`，标题区用 `min-w-0 flex-1` + `truncate`
+- ✅ 长列表用 `<ScrollArea>` 或 `overflow-y-auto`，不要让外层撑开
+- ✅ 页面级 story 在 `parameters` 标注期望视口：
+  ```tsx
+  parameters: {
+    layout: 'fullscreen',
+    viewport: { defaultViewport: 'desktop' },   // 见 .storybook/preview.ts viewports
+  }
+  ```
+
+**自查清单**（生成 story 后必须过一遍）：
+
+1. 把浏览器窗口缩到 1280px，左侧栏 + addon 面板都打开 —— 内容是否完整？
+2. 切到 viewport addon 的 tablet (768px) —— 是否横向滚动条出现？三栏是否折叠？
+3. mock 数据里那条"边界场景"（超长名称）—— 是否被 truncate？还是把布局撑破？
+
 ### cn() 工具函数
 
 所有 className 合并必须使用 `cn()`（clsx + tailwind-merge），正确处理 Tailwind 冲突：
@@ -176,6 +217,72 @@ cat .loop/acceptance-checklist.md 2>/dev/null | head -10
 | 数据实体 + 字段 | 确定 fixtures + handlers |
 | 关键交互流程 | 写 play functions |
 | 视觉风格 | 决定 theme tokens |
+
+**加载增强能力包**（两段式，避免全量预加载撑爆上下文）：
+
+```bash
+# 1. 只扫 frontmatter，输出 manifest（成本低）
+node scripts/lib/enhancers.mjs list proto
+
+# 2. 根据 Step 0 提取的需求关键词过滤（如 form,validation,dialog）
+node scripts/lib/enhancers.mjs select proto --keywords "<kw1,kw2,...>"
+```
+
+处理规则：
+
+- 返回的 `selected` 数组即启用清单；对每份逐一 `Read` 全文，纳入上下文
+- 用 `AskUserQuestion` 把 `selected` / `skipped` 展示给用户确认（默认接受，允许「全部启用」或「跳过某项」）
+- 后续每个生成步骤（Step 3 handlers / Step 4 stories / Step 7 标注迭代修改）开始前，回顾启用的增强规范并在产物中遵守
+- 多个 enhancer 内容冲突时按 frontmatter `priority` 排序：`high` > `medium` > `low`；同优先级按文件名字典序
+- enhancer 与本 skill 红线冲突时（如「全局 globals.css 不可修改」），**红线胜**
+
+用户确认后落盘 manifest：
+
+```bash
+node scripts/lib/enhancers.mjs manifest --phase proto \
+  --selected "<name1>,<name2>" --skipped "<name3>"
+```
+
+Step 10 完成时把 `selected` 数组通过 `forge-state` 写入 `session.json.phases.prototype.enhancers`：
+
+```bash
+echo '{"phases":{"prototype":{"enhancers":["<name1>","<name2>"]}}}' \
+  | node scripts/lib/forge-state.mjs update .loop/session.json --schema session
+```
+
+若 `list` 输出为空数组（无可用 enhancer） → 跳过本步，按默认约定执行。
+
+---
+
+### Step 0.5：Harness 协议启动
+
+在进入 Step 1 之前，先把 harness 追踪打开——**这是 `--resume`、metrics、budget 生效的前提**：
+
+```bash
+# 1. 写 phase.enter（events.jsonl 若不存在会自动创建）
+node scripts/lib/forge-events.mjs append --kind phase.enter --phase prototype --step step.0
+
+# 2. 检查 phase 预算（默认 50 steps / 5 subagents）
+node scripts/lib/forge-budget.mjs check prototype
+# exit 0 = OK, 2 = 触顶 → AskUserQuestion「加预算 / 中断 / 接受当前进度」, 3 = 80% warn
+```
+
+后续每个 Step / AskUserQuestion / annotation 迭代都必须写对应 event：
+
+| 事件 | 何时写 | 命令 |
+|------|--------|------|
+| `step.enter` / `step.exit` | 每个 Step 入口 / 完成时 | `forge-events append --kind step.enter --phase prototype --step step.N` |
+| `askuser.prompt` / `askuser.answer` | AskUserQuestion 前后 | 同上，kind 变 |
+| `enhancer.applied` | Step 0 结束确认清单后 | `forge-events append --kind enhancer.applied --payload '{"name":"..."}'` |
+| `note` | 标注迭代每轮完成时 | 记录处理了多少条 |
+| `phase.exit` | Step 10 完成后 | `forge-events append --kind phase.exit --phase prototype` |
+
+**Step 10 完成后**必须调用 metrics 聚合：
+
+```bash
+node scripts/lib/forge-metrics.mjs compute --phase prototype
+# → 写入 .loop/phases/prototype/metrics.json
+```
 
 ---
 
@@ -842,7 +949,8 @@ Storybook 地址：http://localhost:6006
     "prototype": {
       "status": "completed",
       "completedAt": "<ISO timestamp>",
-      "feedbackRounds": <N>
+      "feedbackRounds": <N>,
+      "enhancers": ["shadcn-form-patterns", "..."]
     }
   },
   "artifacts": {
@@ -853,6 +961,8 @@ Storybook 地址：http://localhost:6006
   }
 }
 ```
+
+> `phases.prototype.enhancers` 记录本轮启用的增强 skill `name` 列表（来自 Step 0 扫描结果，不含 `_` 开头的占位文件）。下游 phase 不依赖此字段，仅供审计/排查。
 
 ---
 
@@ -872,6 +982,8 @@ Storybook 地址：http://localhost:6006
 12. **showcase 必须包 theme scope** — `<div className="theme-<project> ...">` 让主题生效
 13. **className 合并必须用 cn()** — 不直接拼接字符串，避免 Tailwind 冲突
 14. **标注引发的契约变更必须同步** — 改 fixtures 时同步改 `.loop/api-contracts.json` 和 handler，避免三者漂移
+15. **布局禁止固定 px 列宽与 100vh 计算** — 详见「布局自适应规范」。多栏页面必须用 `minmax(0,1fr)` + 响应式断点；高度用 `min-h-screen` 或 `100dvh`，不用 `calc(100vh-...)`
+16. **必须加载并遵守 `.claude/enhancers/proto/*.md`** — Step 0 扫描的所有增强 skill（`_` 开头的占位除外）都要 Read 进上下文，后续每一步生成代码前回顾，冲突按 `priority` 排序
 
 ---
 

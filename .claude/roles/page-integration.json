@@ -1,0 +1,25 @@
+{
+  "role": "page-integration",
+  "description": "Wire feature modules into Next.js App Router pages (app/**/page.tsx + error.tsx + loading.tsx).",
+  "readOnly": false,
+  "allowedTools": ["Read", "Glob", "Grep", "Write", "Edit", "Bash"],
+  "allowedBashPatterns": [
+    "^npm (run|list) ",
+    "^pnpm (run|list) ",
+    "^npx tsc",
+    "^git (status|diff|log) ",
+    "^ls ",
+    "^node scripts/lib/forge-(state|events|patch|budget)\\.mjs "
+  ],
+  "deniedBashPatterns": [
+    "\\bgit push\\b",
+    "\\brm -rf\\b"
+  ],
+  "requiredOutputs": [
+    { "path": ".loop/dev/subagent-receipts/<id>.json", "schema": "subagent-receipt" }
+  ],
+  "promptInjections": [
+    "Pages must prefetch via ensureQueryData (or plain await request<T>()) then render Suspense fallback.",
+    "Every route needs a matching error.tsx with a user-friendly error state."
+  ]
+}

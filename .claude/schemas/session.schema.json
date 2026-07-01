@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-forge.dev/schemas/session.json",
+  "title": "Dev Loop Session State",
+  "description": "Cross-phase state for /dev-loop. Single source of truth at .loop/session.json. Atomic writes only. Full event log is at .loop/events.jsonl — this file is a fast-lookup derived view.",
+  "type": "object",
+  "required": ["loopId", "currentPhase", "phases", "artifacts"],
+  "additionalProperties": false,
+  "properties": {
+    "loopId": {
+      "type": "string",
+      "pattern": "^loop-\\d{8}-\\d{3}$",
+      "description": "Generated at creation time, immutable"
+    },
+    "requirement": {
+      "type": "string",
+      "description": "Original requirement text from /dev-proto invocation"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "currentPhase": {
+      "type": "string",
+      "enum": ["prototype", "dev", "deploy", "done"],
+      "description": "Owned by dev-proto / dev-dev / dev-deploy only. Independent skills (prd/review/test) MUST NOT write this."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["suggest", "auto-edit", "full-auto"],
+      "default": "auto-edit",
+      "description": "Approval mode. Read by PreToolUse hook via forge-mode gate. suggest: everything asks. auto-edit: file writes auto, danger asks. full-auto: everything auto except prod deploys and destructive git ops."
+    },
+    "phases": {
+      "type": "object",
+      "required": ["prototype", "dev", "deploy"],
+      "additionalProperties": false,
+      "properties": {
+        "prototype": { "$ref": "#/$defs/PhaseState" },
+        "dev": { "$ref": "#/$defs/PhaseState" },
+        "deploy": { "$ref": "#/$defs/PhaseState" }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "description": "Centralized artifact path registry so downstream phases never hardcode paths",
+      "additionalProperties": { "type": "string" }
+    },
+    "lastPrd": { "type": "string", "format": "date-time" },
+    "lastReview": { "type": "string", "format": "date-time" },
+    "lastTest": { "type": "string", "format": "date-time" },
+    "lastEvent": {
+      "type": "object",
+      "description": "Fast-lookup snapshot of the most recent event kind + ts (also present in events.jsonl)",
+      "additionalProperties": false,
+      "properties": {
+        "ts": { "type": "string", "format": "date-time" },
+        "kind": { "type": "string" },
+        "phase": { "type": "string" }
+      }
+    },
+    "checkpoints": {
+      "type": "array",
+      "description": "git-tagged checkpoint commits; consumed by /dev-undo",
+      "items": {
+        "type": "object",
+        "required": ["name", "createdAt"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "description": "e.g. cp-3" },
+          "tag": { "type": "string", "description": "full git tag, e.g. loop-20260701-001-cp-3" },
+          "sha": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "phase": { "type": "string" },
+          "summary": { "type": "string" }
+        }
+      }
+    },
+    "worktrees": {
+      "type": "array",
+      "description": "Active subagent worktrees; cleaned up on phase exit",
+      "items": {
+        "type": "object",
+        "required": ["subagentId", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "subagentId": { "type": "string" },
+          "path": { "type": "string" },
+          "branch": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Migration marker. v1 → v2 adds mode, budget, lastEvent, checkpoints, worktrees; auto-upgraded by forge-state migrate-session"
+    }
+  },
+  "$defs": {
+    "PhaseState": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["pending", "in_progress", "completed", "failed"]
+        },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" },
+        "feedbackRounds": { "type": "integer", "minimum": 0 },
+        "environment": {
+          "type": "string",
+          "enum": ["preview", "staging", "production"]
+        },
+        "enhancers": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "planPath": {
+          "type": "string",
+          "description": "Path to phase plan.json (see plan.schema.json)"
+        },
+        "metricsPath": {
+          "type": "string",
+          "description": "Path to phase metrics.json (see phase-metrics.schema.json)"
+        },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxSteps": { "type": "integer", "minimum": 0 },
+            "stepsUsed": { "type": "integer", "minimum": 0 },
+            "maxSubagents": { "type": "integer", "minimum": 0 },
+            "subagentsUsed": { "type": "integer", "minimum": 0 },
+            "maxSelfCheckRetries": { "type": "integer", "minimum": 0 },
+            "checkpointRetries": {
+              "type": "object",
+              "additionalProperties": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

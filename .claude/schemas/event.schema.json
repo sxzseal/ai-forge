@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-forge.dev/schemas/event.json",
+  "title": "Dev Loop Event",
+  "description": "One line in .loop/events.jsonl. Append-only. session.json is a derived view over these events.",
+  "type": "object",
+  "required": ["ts", "phase", "kind"],
+  "additionalProperties": false,
+  "properties": {
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 with millisecond precision"
+    },
+    "loopId": {
+      "type": "string",
+      "pattern": "^loop-\\d{8}-\\d{3}$",
+      "description": "Optional. If missing, derived from .loop/session.json at read time."
+    },
+    "phase": {
+      "type": "string",
+      "enum": ["prototype", "dev", "deploy", "meta"],
+      "description": "'meta' for events not tied to a specific phase (e.g. mode change, /dev-undo)"
+    },
+    "step": {
+      "type": "string",
+      "description": "Free-form step identifier, e.g. 'step.2' or 'step.2.subagent-spawn'"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "phase.enter",
+        "phase.exit",
+        "step.enter",
+        "step.exit",
+        "subagent.spawn",
+        "subagent.return",
+        "subagent.failed",
+        "tool.call",
+        "tool.result",
+        "tool.blocked",
+        "askuser.prompt",
+        "askuser.answer",
+        "checkpoint.created",
+        "checkpoint.reverted",
+        "selfcheck.pass",
+        "selfcheck.fail",
+        "budget.warn",
+        "budget.exceeded",
+        "enhancer.applied",
+        "patch.applied",
+        "patch.rejected",
+        "worktree.created",
+        "worktree.merged",
+        "worktree.dropped",
+        "mode.changed",
+        "error",
+        "note"
+      ]
+    },
+    "payload": {
+      "type": "object",
+      "description": "Kind-specific payload. Free-form to avoid over-fitting schema; consumers should tolerate missing fields."
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional monotonically increasing sequence within loop; used for tie-breaking events written in the same millisecond"
+    }
+  }
+}
